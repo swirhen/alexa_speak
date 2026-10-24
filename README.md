@@ -33,10 +33,19 @@ curl -s -X POST -H 'Content-Type: application/json' \
 
 ### REFRESH_TOKEN の取得
 
-[alexa-cookie-cli](https://github.com/adn77/alexa-cookie-cli/releases) を手元の PC で実行し、表示された `http://127.0.0.1:8080` で Amazon にログインします。
+[alexa-cookie-cli](https://github.com/adn77/alexa-cookie-cli) を手元の PC で実行し、表示された `http://127.0.0.1:8080` で Amazon にログインします。`-B 127.0.0.1` を付けないとログイン用のプロキシが LAN に公開される。
 
 ```
-alexa-cookie-cli --amazonPage amazon.co.jp --baseAmazonPage amazon.co.jp --acceptLanguage ja-JP
+alexa-cookie-cli -p amazon.co.jp -b amazon.co.jp -a ja_JP -L ja-JP -B 127.0.0.1
+```
+
+v5.0.5 の Windows 版 exe は起動時に `V8 rejected the bytecode cache` で落ちるため、ソースを Node.js で動かす。
+
+```powershell
+git clone --depth 1 --branch v5.0.5 https://github.com/adn77/alexa-cookie-cli.git $env:LOCALAPPDATA\alexa-cookie-cli
+cd $env:LOCALAPPDATA\alexa-cookie-cli; npm ci --omit=dev
+# PATH の通ったフォルダに alexa-cookie-cli.cmd を置く
+# 中身: @node "%LOCALAPPDATA%\alexa-cookie-cli\alexa-cookie-cli.js" %*
 ```
 
 パスワード変更などで失効したら取り直して `/etc/default/alexa-speak` を書き換え、サービスを再起動します。
