@@ -47,6 +47,7 @@ print(r.status_code, r.json()["ok"])
 | --- | --- |
 | `text`（必須） | 読み上げる文章。300 文字まで |
 | `device`（省略可） | 読み上げる端末名。通常は省略する（持ち主の決めた既定の端末で読み上げる）。端末名は `GET /devices` で分かる |
+| `chime`（省略可） | 読み上げの前にチャイムを鳴らすか。既定は `true`。続けて何通も送るときの 2 通目以降など、鳴らさないほうが自然なときだけ `false` にする |
 
 応答は JSON で、`ok` が `true` なら読み上げを依頼できています。読み上げが始まるまで数秒〜十数秒かかることがあるので、タイムアウトは長め（60 秒以上）にしてください。
 
@@ -82,7 +83,7 @@ URL は `https://swirhen.tv/alexa_speak/<パス>`（サーバー内からは `ht
 | GET | `/health` | 死活確認（認証なし） |
 | GET | `/admin` | ID の管理ページ（管理者でログイン） |
 | GET | `/devices` | 端末一覧（`alexa_remote_control.sh -a` の出力） |
-| POST | `/speak` | `{"text": "読み上げる文章", "device": "端末名"}`。`device` を省くと `ALEXA_DEFAULT_DEVICE` を使う。文章は 300 文字まで |
+| POST | `/speak` | `{"text": "読み上げる文章", "device": "端末名", "chime": true}`。`device` を省くと `ALEXA_DEFAULT_DEVICE` を使う。`chime` が `true`（既定）なら、文章を SSML で包んで前に `ALEXA_SPEAK_CHIME` の音を入れる。文章は 300 文字まで |
 
 ```bash
 curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
@@ -104,6 +105,7 @@ curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
 | `REFRESH_TOKEN` | alexa-cookie-cli で取得する `Atnr|...` のトークン |
 | `ALEXA_DEFAULT_DEVICE` | `device` を省いたときの端末名（`/devices` で表示される名前） |
 | `SPEAKVOL` | 読み上げ時の音量（0 は変更しない） |
+| `ALEXA_SPEAK_CHIME` | 読み上げの前に鳴らす音。Alexa の効果音ライブラリ（[ASK Sound Library](https://developer.amazon.com/en-US/docs/alexa/custom-skills/ask-soundlibrary.html)）の `soundbank://` URL。省略時はドアチャイム（`soundbank://soundlibrary/home/amzn_sfx_doorbell_chime_01`）、空にするとチャイムなし |
 | `ALEXA_SPEAK_ADMIN` | 管理ページの管理者。`id:password` の形で書く。空なら管理ページは使えない |
 
 #### API の ID の管理

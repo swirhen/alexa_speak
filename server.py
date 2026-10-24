@@ -2,7 +2,7 @@
 
 GET  /health            死活確認（認証なし）
 GET  /devices           端末一覧（alexa_remote_control.sh -a）
-POST /speak             {"text": "...", "device": "端末名（省略時は ALEXA_DEFAULT_DEVICE）"}
+POST /speak             {"text": "...", "device": "端末名（省略時は ALEXA_DEFAULT_DEVICE）", "chime": true}
 GET  /admin             API の ID を管理するページ（管理者の Basic 認証）
 
 /devices と /speak は、管理ページで発行した ID とパスワードの Basic 認証が必要。
@@ -13,6 +13,7 @@ ID は clients.json にパスワードのハッシュで保存する。管理者
 import base64
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -30,6 +31,10 @@ SCRIPT = os.environ.get("ALEXA_SCRIPT", "/home/swirhen/alexa-remote-control/alex
 HOST = os.environ.get("ALEXA_SPEAK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ALEXA_SPEAK_PORT", "8003"))
 DEFAULT_DEVICE = os.environ.get("ALEXA_DEFAULT_DEVICE", "")
+# 読み上げの前に鳴らす音（Alexa の効果音ライブラリの soundbank:// URL）。空ならチャイムなし
+CHIME = os.environ.get(
+    "ALEXA_SPEAK_CHIME", "soundbank://soundlibrary/home/amzn_sfx_doorbell_chime_01"
+).strip()
 CLIENTS_FILE = Path(os.environ.get("ALEXA_SPEAK_CLIENTS_FILE", Path(__file__).with_name("clients.json")))
 ADMIN_PAGE = Path(__file__).with_name("admin.html")
 MAX_TEXT = 300
@@ -151,6 +156,14 @@ def sanitize(text: str) -> str:
     # スクリプト内で引用符なしの echo を通るため、glob として展開される文字を除く
     text = re.sub(r"[*?\[\]]", "", text)
     return " ".join(text.split())
+
+
+def to_speech(text: str, chime: bool) -> str:
+    """チャイムを付けるときは SSML にして、文章の前に効果音を入れる。"""
+    if not (chime and CHIME):
+        return text
+    # スクリプトが " を ' に置き換えるので、属性は ' で囲む
+    return f"<speak><audio src='{html.escape(CHIME)}'/>{html.escape(text, quote=False)}</speak>"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -328,6 +341,10 @@ class Handler(BaseHTTPRequestHandler):
 
         text = sanitize(str(body.get("text", "")))
         device = str(body.get("device") or DEFAULT_DEVICE)
+        chime = body.get("chime", True)
+        if not isinstance(chime, bool):
+            self._send(400, {"ok": False, "error": "chime must be true or false"})
+            return
         if not text:
             self._send(400, {"ok": False, "error": "text is required"})
             return
@@ -347,9 +364,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             q.append(now)
 
-        print(f"speak client={self.client_id} device={device} text={text}", flush=True)
+        print(f"speak client={self.client_id} device={device} chime={chime} text={text}", flush=True)
         try:
-            r = run_script("-d", device, "-e", f"speak:{text}")
+            r = run_script("-d", device, "-e", f"speak:{to_speech(text, chime)}")
         except subprocess.TimeoutExpired:
             self._send(504, {"ok": False, "error": "timeout"})
             return
