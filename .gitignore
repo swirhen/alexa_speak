@@ -2,3 +2,4 @@ __pycache__
 *.tmp
 clients.json
 alexa-speak.env
+mcp_server/.venv/

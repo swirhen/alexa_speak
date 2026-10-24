@@ -12,10 +12,12 @@
 - `admin.html`: ID の管理ページ（`/admin`、管理者の Basic 認証）。変更の操作は `X-Alexa-Speak-Admin: 1` ヘッダーが必須（ほかのサイトからの CSRF 対策）。
 - `alexa-speak.service`: systemd 定義。日本向けの環境変数と cookie の保存先もここで指定する。
 - `alexa-speak.env.example`: `/etc/default/alexa-speak` の雛形。
+- `mcp_server/server.py`: `/speak` を呼ぶ MCP サーバー（claude.ai のカスタムコネクタ用、Streamable HTTP、ツールは `speak` だけ）。認証情報は環境変数（`/etc/default/alexa-speak-mcp`）から読む。
 
 ## 注意
 
-- `REFRESH_TOKEN`・`ALEXA_SPEAK_ADMIN` の値と `clients.json` は表示・コミットしない。
+- `REFRESH_TOKEN`・`ALEXA_SPEAK_ADMIN`・`ALEXA_SPEAK_PASSWORD`・`ALEXA_SPEAK_MCP_PATH_TOKEN` の値と `clients.json` は表示・コミットしない。
+- MCP サーバーは URL のトークンだけで守っている。公開するツールを増やすときは、URL を知った人に何ができるようになるかを考えること。
 - API は `https://swirhen.tv/alexa_speak/` で外部に公開している。`/health` 以外は必ず Basic 認証を通すこと（認証なしの読み上げ口を作らない）。
 - alexa-remote-control は `speak:` の文章を引用符なしの `echo` に通すため、`server.py` で glob 文字（`*?[]`）を取り除いている。
 - スクリプトは失敗しても終了コード 0 を返すことがあるので、成否は出力の中身でも判定している。
@@ -23,4 +25,4 @@
 
 ## 検証
 
-- 変更後は `python -m py_compile server.py` を実行する。
+- 変更後は `python -m py_compile server.py mcp_server/server.py` を実行する。
