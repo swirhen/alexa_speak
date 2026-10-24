@@ -14,6 +14,7 @@ URL は `https://swirhen.tv/alexa_speak/<パス>`（サーバー内からは `ht
 | メソッド | パス | 内容 |
 | --- | --- | --- |
 | GET | `/health` | 死活確認（認証なし） |
+| GET | `/admin` | ID の管理ページ（管理者でログイン） |
 | GET | `/devices` | 端末一覧（`alexa_remote_control.sh -a` の出力） |
 | POST | `/speak` | `{"text": "読み上げる文章", "device": "端末名"}`。`device` を省くと `ALEXA_DEFAULT_DEVICE` を使う。文章は 300 文字まで |
 
@@ -22,7 +23,7 @@ curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
   -d '{"text":"テストです。聞こえますか？"}' https://swirhen.tv/alexa_speak/speak
 ```
 
-- `/health` 以外は Basic 認証が必要。ID とパスワードは呼び出し元ごとに `ALEXA_SPEAK_CLIENTS` に書く。
+- `/devices` と `/speak` は Basic 認証が必要。ID とパスワードは管理ページで呼び出し元ごとに発行する。
 - 認証の失敗は、同じ接続元で 15 分に 5 回、全体で 15 分に 30 回を超えると 429 になる。読み上げは ID ごとに 1 分 10 回まで。記録はメモリ上だけで、再起動すると消える。
 - 読み上げた内容は、呼び出し元の ID と一緒に journal に残る（`journalctl -u alexa-speak`）。
 
@@ -43,9 +44,15 @@ curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
 | `REFRESH_TOKEN` | alexa-cookie-cli で取得する `Atnr|...` のトークン |
 | `ALEXA_DEFAULT_DEVICE` | `device` を省いたときの端末名（`/devices` で表示される名前） |
 | `SPEAKVOL` | 読み上げ時の音量（0 は変更しない） |
-| `ALEXA_SPEAK_CLIENTS` | API の ID とパスワード。`id1:password1,id2:password2` のように呼び出し元ごとに並べる。空だと `/health` 以外はすべて 401 |
+| `ALEXA_SPEAK_ADMIN` | 管理ページの管理者。`id:password` の形で書く。空なら管理ページは使えない |
 
-ID を足す・消すときは `/etc/default/alexa-speak` を書き換えて `sudo systemctl restart alexa-speak` する。
+### API の ID の管理
+
+`https://swirhen.tv/alexa_speak/admin` を開き、`ALEXA_SPEAK_ADMIN` の ID とパスワードでログインする。ID の追加・パスワードの再発行・削除ができ、最終使用日時も見られる。
+
+- パスワードはサーバーが乱数で作り、発行した画面でだけ表示する（保存するのはソルト付きのハッシュだけなので、あとから見ることはできない）。忘れたら再発行する。
+- ID は `clients.json`（リポジトリ直下、Git 管理外、権限 600）に保存する。
+- `clients.json` が無い状態で起動すると、`ALEXA_SPEAK_CLIENTS`（`id:password` のカンマ区切り。以前の設定方法）の ID を取り込む。
 
 日本向けの設定（`AMAZON=amazon.co.jp` など）と cookie の保存先は `alexa-speak.service` に書いています。
 

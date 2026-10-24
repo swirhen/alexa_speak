@@ -3,29 +3,38 @@
 GET  /health            死活確認（認証なし）
 GET  /devices           端末一覧（alexa_remote_control.sh -a）
 POST /speak             {"text": "...", "device": "端末名（省略時は ALEXA_DEFAULT_DEVICE）"}
+GET  /admin             API の ID を管理するページ（管理者の Basic 認証）
 
-/health 以外は Basic 認証が必要。ID とパスワードは ALEXA_SPEAK_CLIENTS に
-"id1:password1,id2:password2" の形で書く（呼び出し元の AI ごとに分ける）。
+/devices と /speak は、管理ページで発行した ID とパスワードの Basic 認証が必要。
+ID は clients.json にパスワードのハッシュで保存する。管理者は ALEXA_SPEAK_ADMIN に
+"id:password" の形で書く（空なら管理ページは使えない）。
 """
 
 import base64
+import hashlib
 import hmac
 import json
 import os
 import re
+import secrets
 import subprocess
 import threading
 import time
 from collections import defaultdict, deque
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 SCRIPT = os.environ.get("ALEXA_SCRIPT", "/home/swirhen/alexa-remote-control/alexa_remote_control.sh")
 HOST = os.environ.get("ALEXA_SPEAK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ALEXA_SPEAK_PORT", "8003"))
 DEFAULT_DEVICE = os.environ.get("ALEXA_DEFAULT_DEVICE", "")
+CLIENTS_FILE = Path(os.environ.get("ALEXA_SPEAK_CLIENTS_FILE", Path(__file__).with_name("clients.json")))
+ADMIN_PAGE = Path(__file__).with_name("admin.html")
 MAX_TEXT = 300
 TIMEOUT = 90
+CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 
 # 認証の失敗は 15 分で接続元ごとに 5 回、全体で 30 回まで
 FAIL_WINDOW = 15 * 60
@@ -36,16 +45,12 @@ SPEAK_WINDOW = 60
 SPEAK_LIMIT = 10
 
 
-def load_clients() -> dict[str, str]:
-    clients = {}
-    for item in os.environ.get("ALEXA_SPEAK_CLIENTS", "").split(","):
-        cid, sep, password = item.strip().partition(":")
-        if cid and sep and password:
-            clients[cid] = password
-    return clients
+def _parse_pair(value: str) -> tuple[str, str] | None:
+    cid, sep, password = value.strip().partition(":")
+    return (cid, password) if cid and sep and password else None
 
 
-CLIENTS = load_clients()
+ADMIN = _parse_pair(os.environ.get("ALEXA_SPEAK_ADMIN", ""))
 
 # スクリプトは cookie・端末一覧を共有ファイルに書くので、同時に実行しない
 _lock = threading.Lock()
@@ -53,6 +58,81 @@ _lock = threading.Lock()
 _rate_lock = threading.Lock()
 _fails: dict[str, deque] = defaultdict(deque)
 _speaks: dict[str, deque] = defaultdict(deque)
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _hash(password: str, salt: str) -> str:
+    # パスワードはこちらで発行する長い乱数なので、ソルト付き SHA-256 で足りる
+    return hashlib.sha256((salt + password).encode()).hexdigest()
+
+
+class ClientStore:
+    """API の ID とパスワード（ハッシュ）を clients.json で持つ。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.lock = threading.Lock()
+        if path.exists():
+            self.clients = json.loads(path.read_text(encoding="utf-8"))["clients"]
+        else:
+            # 初回だけ、以前の ALEXA_SPEAK_CLIENTS（id:password のカンマ区切り）を取り込む
+            self.clients = {}
+            for item in os.environ.get("ALEXA_SPEAK_CLIENTS", "").split(","):
+                pair = _parse_pair(item)
+                if pair and CLIENT_ID_RE.match(pair[0]):
+                    self._set_password(pair[0], pair[1])
+            self._save()
+
+    def _set_password(self, cid: str, password: str) -> None:
+        salt = secrets.token_hex(16)
+        entry = self.clients.setdefault(cid, {"created": _now(), "last_used": None})
+        entry["salt"] = salt
+        entry["hash"] = _hash(password, salt)
+
+    def _save(self) -> None:
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"clients": self.clients}, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+
+    def verify(self, cid: str, password: str) -> bool:
+        with self.lock:
+            entry = self.clients.get(cid)
+            if not entry or not hmac.compare_digest(_hash(password, entry["salt"]), entry["hash"]):
+                return False
+            entry["last_used"] = _now()
+            self._save()
+            return True
+
+    def list(self) -> list[dict]:
+        with self.lock:
+            return [
+                {"id": cid, "created": e["created"], "last_used": e["last_used"]}
+                for cid, e in sorted(self.clients.items())
+            ]
+
+    def issue(self, cid: str, new: bool) -> str | None:
+        """new=True は追加（既にあれば None）、False は再発行（無ければ None）。"""
+        with self.lock:
+            if (cid in self.clients) == new:
+                return None
+            password = secrets.token_hex(24)
+            self._set_password(cid, password)
+            self._save()
+            return password
+
+    def delete(self, cid: str) -> bool:
+        with self.lock:
+            if self.clients.pop(cid, None) is None:
+                return False
+            self._save()
+            return True
+
+
+STORE = ClientStore(CLIENTS_FILE)
 
 
 def _prune(q: deque, window: int, now: float) -> None:
@@ -81,6 +161,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -93,8 +174,11 @@ class Handler(BaseHTTPRequestHandler):
             return forwarded.split(",")[-1].strip()
         return self.client_address[0]
 
-    def _authenticate(self) -> bool:
+    def _authenticate(self, admin: bool = False) -> bool:
         """認証に失敗したときは応答まで送って False を返す。"""
+        if admin and ADMIN is None:
+            self._send(404, {"ok": False, "error": "not found"})
+            return False
         ip = self._remote_ip()
         now = time.time()
         with _rate_lock:
@@ -111,23 +195,103 @@ class Handler(BaseHTTPRequestHandler):
                 cid, _, password = base64.b64decode(header[6:]).decode("utf-8").partition(":")
             except (ValueError, UnicodeDecodeError):
                 pass
-        expected = CLIENTS.get(cid)
-        if expected is not None and hmac.compare_digest(password.encode(), expected.encode()):
-            self.client_id = cid
+        if admin:
+            ok = hmac.compare_digest(cid.encode(), ADMIN[0].encode()) and hmac.compare_digest(
+                password.encode(), ADMIN[1].encode()
+            )
+        else:
+            ok = STORE.verify(cid, password)
+        if ok:
+            self.client_id = f"admin:{cid}" if admin else cid
             return True
 
         if header:
             with _rate_lock:
                 _fails[ip].append(now)
                 _fails["*"].append(now)
+        realm = "alexa_speak admin" if admin else "alexa_speak"
         self._send(401, {"ok": False, "error": "unauthorized"},
-                   {"WWW-Authenticate": 'Basic realm="alexa_speak"'})
+                   {"WWW-Authenticate": f'Basic realm="{realm}"'})
         return False
+
+    def _read_json(self) -> dict | None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            body = None
+        if not isinstance(body, dict):
+            self._send(400, {"ok": False, "error": "invalid json"})
+            return None
+        return body
+
+    # ---- 管理ページ ----
+
+    def _admin(self, method: str, path: str) -> None:
+        if not self._authenticate(admin=True):
+            return
+        if path == "/admin" and method == "GET":
+            data = ADMIN_PAGE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if path == "/admin/api/clients" and method == "GET":
+            self._send(200, {"ok": True, "clients": STORE.list()})
+            return
+
+        # 変更の操作は、ほかのサイトのフォームから送れないよう専用ヘッダーを必須にする
+        if self.headers.get("X-Alexa-Speak-Admin") != "1":
+            self._send(403, {"ok": False, "error": "missing X-Alexa-Speak-Admin header"})
+            return
+        m = re.fullmatch(r"/admin/api/clients(?:/([^/]+)(/reset)?)?", path)
+        if not m:
+            self._send(404, {"ok": False, "error": "not found"})
+            return
+        cid, reset = (unquote(m.group(1)) if m.group(1) else None), bool(m.group(2))
+
+        if method == "POST" and cid is None:
+            body = self._read_json()
+            if body is None:
+                return
+            cid = str(body.get("id", "")).strip()
+            if not CLIENT_ID_RE.match(cid):
+                self._send(400, {"ok": False, "error": "ID は英数字と _ . - で 32 文字まで"})
+                return
+            password = STORE.issue(cid, new=True)
+            if password is None:
+                self._send(409, {"ok": False, "error": "その ID は既にある"})
+                return
+            print(f"admin {self.client_id} created client {cid}", flush=True)
+            self._send(200, {"ok": True, "id": cid, "password": password})
+        elif method == "POST" and cid and reset:
+            password = STORE.issue(cid, new=False)
+            if password is None:
+                self._send(404, {"ok": False, "error": "その ID は無い"})
+                return
+            print(f"admin {self.client_id} reset client {cid}", flush=True)
+            self._send(200, {"ok": True, "id": cid, "password": password})
+        elif method == "DELETE" and cid and not reset:
+            if not STORE.delete(cid):
+                self._send(404, {"ok": False, "error": "その ID は無い"})
+                return
+            print(f"admin {self.client_id} deleted client {cid}", flush=True)
+            self._send(200, {"ok": True})
+        else:
+            self._send(405, {"ok": False, "error": "method not allowed"})
+
+    # ---- API ----
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
         if path == "/health":
             self._send(200, {"ok": True})
+            return
+        if path == "/admin" or path.startswith("/admin/"):
+            self._admin("GET", path)
             return
         if path != "/devices":
             self._send(404, {"ok": False, "error": "not found"})
@@ -141,20 +305,25 @@ class Handler(BaseHTTPRequestHandler):
         lines = [l for l in r.stdout.splitlines() if l.strip()]
         self._send(200, {"ok": True, "output": lines})
 
+    def do_DELETE(self) -> None:
+        path = urlsplit(self.path).path
+        if path.startswith("/admin/"):
+            self._admin("DELETE", path)
+        else:
+            self._send(404, {"ok": False, "error": "not found"})
+
     def do_POST(self) -> None:
-        if urlsplit(self.path).path != "/speak":
+        path = urlsplit(self.path).path
+        if path.startswith("/admin/"):
+            self._admin("POST", path)
+            return
+        if path != "/speak":
             self._send(404, {"ok": False, "error": "not found"})
             return
         if not self._authenticate():
             return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except (ValueError, json.JSONDecodeError):
-            self._send(400, {"ok": False, "error": "invalid json"})
-            return
-        if not isinstance(body, dict):
-            self._send(400, {"ok": False, "error": "invalid json"})
+        body = self._read_json()
+        if body is None:
             return
 
         text = sanitize(str(body.get("text", "")))
@@ -195,6 +364,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    if not CLIENTS:
-        print("ALEXA_SPEAK_CLIENTS が空なので、/health 以外はすべて 401 になる", flush=True)
+    if ADMIN is None:
+        print("ALEXA_SPEAK_ADMIN が空なので、管理ページは使えない", flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

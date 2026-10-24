@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alexa Speak 管理</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --fg: #1d2330; --muted: #6b7385; --line: #dde1e8; --accent: #2f6fde; --danger: #c93a3a; --ok-bg: #eaf6ee; --ok-line: #8cc9a0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15181e; --card: #1e222a; --fg: #e4e7ee; --muted: #9aa2b3; --line: #343a46; --accent: #6c9cf0; --danger: #e46a6a; --ok-bg: #1d3326; --ok-line: #3f7a52; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  input { flex: 1; min-width: 160px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+  button { padding: 7px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.ops { text-align: right; white-space: nowrap; }
+  td.ops button { margin-left: 4px; padding: 4px 10px; font-size: 13px; }
+  .id { font-family: ui-monospace, Consolas, monospace; font-weight: 600; }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); padding: 12px 6px; }
+  #issued { display: none; background: var(--ok-bg); border-color: var(--ok-line); }
+  #issued p { margin: 0 0 8px; }
+  pre { margin: 0 0 8px; padding: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font: 13px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+  #msg { min-height: 1.6em; color: var(--danger); font-size: 14px; margin: 8px 0 0; }
+  @media (max-width: 560px) {
+    th.used, td.used { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Alexa Speak 管理</h1>
+  <p class="sub">読み上げ API を使う ID（呼び出し元の AI ごと）を管理します。パスワードは発行したときだけ表示されます。</p>
+
+  <section id="issued">
+    <h2>パスワードを発行しました</h2>
+    <p>この画面を離れると二度と表示されません。いま控えてください。</p>
+    <pre id="issued-cred"></pre>
+    <button id="copy-cred">ID とパスワードをコピー</button>
+    <p class="muted" style="margin-top:12px">呼び出し例</p>
+    <pre id="issued-curl"></pre>
+    <button id="copy-curl">呼び出し例をコピー</button>
+  </section>
+
+  <section>
+    <h2>ID を追加</h2>
+    <form id="add">
+      <input id="new-id" placeholder="例: claude、chatgpt（英数字と _ . -）" maxlength="32" autocomplete="off" required>
+      <button class="primary" type="submit">追加して発行</button>
+    </form>
+    <p id="msg"></p>
+  </section>
+
+  <section>
+    <h2>ID 一覧</h2>
+    <table>
+      <thead><tr><th>ID</th><th>作成</th><th class="used">最終使用</th><th></th></tr></thead>
+      <tbody id="list"><tr><td colspan="4" class="empty">読み込み中…</td></tr></tbody>
+    </table>
+  </section>
+</main>
+<script>
+const API = 'admin/api/clients';
+const SPEAK_URL = new URL('speak', location.href).href;
+const $ = (id) => document.getElementById(id);
+
+async function call(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json', 'X-Alexa-Speak-Admin': '1' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+const fmt = (s) => s ? s.replace('T', ' ') : '—';
+
+async function load() {
+  const tbody = $('list');
+  try {
+    const { clients } = await call('GET', API);
+    tbody.innerHTML = '';
+    if (!clients.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">まだありません</td></tr>';
+      return;
+    }
+    for (const c of clients) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="id"></td><td class="muted"></td><td class="muted used"></td>
+        <td class="ops"><button data-act="reset">再発行</button><button class="danger" data-act="del">削除</button></td>`;
+      tr.cells[0].textContent = c.id;
+      tr.cells[1].textContent = fmt(c.created);
+      tr.cells[2].textContent = fmt(c.last_used);
+      tr.querySelector('[data-act=reset]').onclick = () => reset(c.id);
+      tr.querySelector('[data-act=del]').onclick = () => del(c.id);
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    tbody.innerHTML = '';
+    const tr = tbody.insertRow(); const td = tr.insertCell();
+    td.colSpan = 4; td.className = 'empty'; td.textContent = '読み込めませんでした: ' + e.message;
+  }
+}
+
+function showIssued(id, password) {
+  $('issued-cred').textContent = `ID: ${id}\nパスワード: ${password}`;
+  $('issued-curl').textContent =
+    `curl -s -u '${id}:${password}' -X POST -H 'Content-Type: application/json' \\\n` +
+    `  -d '{"text":"テストです"}' ${SPEAK_URL}`;
+  $('issued').style.display = 'block';
+  $('copy-cred').onclick = () => copy(`${id}:${password}`, 'copy-cred');
+  $('copy-curl').onclick = () => copy($('issued-curl').textContent, 'copy-curl');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function copy(text, btnId) {
+  const btn = $(btnId), label = btn.textContent;
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'コピーしました'; }
+  catch { btn.textContent = 'コピーできませんでした'; }
+  setTimeout(() => btn.textContent = label, 1500);
+}
+
+$('add').onsubmit = async (ev) => {
+  ev.preventDefault();
+  $('msg').textContent = '';
+  const id = $('new-id').value.trim();
+  try {
+    const r = await call('POST', API, { id });
+    $('new-id').value = '';
+    showIssued(r.id, r.password);
+    load();
+  } catch (e) { $('msg').textContent = e.message; }
+};
+
+async function reset(id) {
+  if (!confirm(`「${id}」のパスワードを再発行します。今のパスワードは使えなくなります。`)) return;
+  try { const r = await call('POST', `${API}/${encodeURIComponent(id)}/reset`); showIssued(r.id, r.password); }
+  catch (e) { alert(e.message); }
+}
+
+async function del(id) {
+  if (!confirm(`「${id}」を削除します。この ID からは読み上げできなくなります。`)) return;
+  try { await call('DELETE', `${API}/${encodeURIComponent(id)}`); load(); }
+  catch (e) { alert(e.message); }
+}
+
+load();
+</script>
+</body>
+</html>
