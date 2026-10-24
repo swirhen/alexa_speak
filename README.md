@@ -33,17 +33,21 @@ curl -s -X POST -H 'Content-Type: application/json' \
 
 ### REFRESH_TOKEN の取得
 
-[alexa-cookie-cli](https://github.com/adn77/alexa-cookie-cli) を手元の PC で実行し、表示された `http://127.0.0.1:8080` で Amazon にログインします。`-B 127.0.0.1` を付けないとログイン用のプロキシが LAN に公開される。
+[alexa-cookie-cli](https://github.com/adn77/alexa-cookie-cli) を手元の PC で実行し、表示された `http://127.0.0.1:8080` で Amazon にログインします。「cookie が取れた」旨のページが出たら成功で、ターミナルに `refreshToken: Atnr|...` が出ます（その後も CPU を使い続けるので Ctrl+C で止める）。
 
 ```
-alexa-cookie-cli -p amazon.co.jp -b amazon.co.jp -a ja_JP -L ja-JP -B 127.0.0.1
+alexa-cookie-cli -p amazon.co.jp -b amazon.com -a ja_JP -L ja-JP -B 127.0.0.1
 ```
 
-v5.0.5 の Windows 版 exe は起動時に `V8 rejected the bytecode cache` で落ちるため、ソースを Node.js で動かす。
+- `-b`（ログイン窓口）は日本のアカウントでも **amazon.com** にする。`amazon.co.jp` にすると、ログイン後の `/ap/maplanding` に認可コードが付かず「有効なページではない」と出て失敗する。`-p`（Alexa を使う国）は `amazon.co.jp`。
+- ログイン ID（メールアドレス・電話番号）が US などほかの国のアカウントと同じだと、そちらのアカウントとして扱われる。JP アカウントだけで使っている ID でログインする。
+- `-B 127.0.0.1` を付けないと、ログイン用のプロキシが LAN に公開される。
+
+v5.0.5 の Windows 版 exe は起動時に `V8 rejected the bytecode cache` で落ちるため、ソースを Node.js で動かす。alexa-cookie2 は 2段階認証での 404 が直った 5.0.6 以上にする。
 
 ```powershell
 git clone --depth 1 --branch v5.0.5 https://github.com/adn77/alexa-cookie-cli.git $env:LOCALAPPDATA\alexa-cookie-cli
-cd $env:LOCALAPPDATA\alexa-cookie-cli; npm ci --omit=dev
+cd $env:LOCALAPPDATA\alexa-cookie-cli; npm ci --omit=dev; npm install alexa-cookie2@5.0.6 --omit=dev --no-save
 # PATH の通ったフォルダに alexa-cookie-cli.cmd を置く
 # 中身: @node "%LOCALAPPDATA%\alexa-cookie-cli\alexa-cookie-cli.js" %*
 ```
