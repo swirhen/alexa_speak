@@ -13,7 +13,8 @@
 
 ## 注意
 
-- `REFRESH_TOKEN` の値は表示・コミットしない。
+- `REFRESH_TOKEN` と `ALEXA_SPEAK_CLIENTS` の値は表示・コミットしない。
+- API は `https://swirhen.tv/alexa_speak/` で外部に公開している。`/health` 以外は必ず Basic 認証を通すこと（認証なしの読み上げ口を作らない）。
 - alexa-remote-control は `speak:` の文章を引用符なしの `echo` に通すため、`server.py` で glob 文字（`*?[]`）を取り除いている。
 - スクリプトは失敗しても終了コード 0 を返すことがあるので、成否は出力の中身でも判定している。
 - 本番の `/home/swirhen/alexa-remote-control` は upstream のまま使い、改変しない。

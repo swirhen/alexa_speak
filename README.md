@@ -3,21 +3,36 @@
 [alexa-remote-control](https://github.com/thorsten-gehrig/alexa-remote-control) を HTTP から呼び、Echo に任意の文章を読み上げさせる API です。リマインダーなどを AI で作った文章で読み上げさせるための土台です。
 
 ```
-呼び出し元 ──HTTP──▶ server.py (127.0.0.1:8003) ──▶ alexa_remote_control.sh ──▶ Alexa
+呼び出し元（AI など）──HTTPS + Basic 認証──▶ Apache (https://swirhen.tv/alexa_speak/)
+  ──▶ server.py (127.0.0.1:8003) ──▶ alexa_remote_control.sh ──▶ Alexa
 ```
 
 ## API
 
+URL は `https://swirhen.tv/alexa_speak/<パス>`（サーバー内からは `http://127.0.0.1:8003/<パス>`）。
+
 | メソッド | パス | 内容 |
 | --- | --- | --- |
-| GET | `/health` | 死活確認 |
+| GET | `/health` | 死活確認（認証なし） |
 | GET | `/devices` | 端末一覧（`alexa_remote_control.sh -a` の出力） |
 | POST | `/speak` | `{"text": "読み上げる文章", "device": "端末名"}`。`device` を省くと `ALEXA_DEFAULT_DEVICE` を使う。文章は 300 文字まで |
 
 ```bash
-curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{"text":"テストです。聞こえますか？"}' http://127.0.0.1:8003/speak
+curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"テストです。聞こえますか？"}' https://swirhen.tv/alexa_speak/speak
 ```
+
+- `/health` 以外は Basic 認証が必要。ID とパスワードは呼び出し元ごとに `ALEXA_SPEAK_CLIENTS` に書く。
+- 認証の失敗は、同じ接続元で 15 分に 5 回、全体で 15 分に 30 回を超えると 429 になる。読み上げは ID ごとに 1 分 10 回まで。記録はメモリ上だけで、再起動すると消える。
+- 読み上げた内容は、呼び出し元の ID と一緒に journal に残る（`journalctl -u alexa-speak`）。
+
+| 応答 | 意味 |
+| --- | --- |
+| 200 `{"ok": true}` | 読み上げを依頼できた |
+| 400 | 文章が空・長すぎる、JSON が不正 |
+| 401 | ID かパスワードが違う |
+| 429 | 回数制限 |
+| 502 / 504 | Alexa 側の失敗（トークンの失効など）・タイムアウト |
 
 ## 設定
 
@@ -28,6 +43,9 @@ curl -s -X POST -H 'Content-Type: application/json' \
 | `REFRESH_TOKEN` | alexa-cookie-cli で取得する `Atnr|...` のトークン |
 | `ALEXA_DEFAULT_DEVICE` | `device` を省いたときの端末名（`/devices` で表示される名前） |
 | `SPEAKVOL` | 読み上げ時の音量（0 は変更しない） |
+| `ALEXA_SPEAK_CLIENTS` | API の ID とパスワード。`id1:password1,id2:password2` のように呼び出し元ごとに並べる。空だと `/health` 以外はすべて 401 |
+
+ID を足す・消すときは `/etc/default/alexa-speak` を書き換えて `sudo systemctl restart alexa-speak` する。
 
 日本向けの設定（`AMAZON=amazon.co.jp` など）と cookie の保存先は `alexa-speak.service` に書いています。
 
@@ -59,6 +77,7 @@ cd $env:LOCALAPPDATA\alexa-cookie-cli; npm ci --omit=dev; npm install alexa-cook
 - 配置先: `/home/swirhen/alexa_speak`（`prod-checker`）
 - 本体: `/home/swirhen/alexa-remote-control`（upstream をクローンしたもの。改変しない）
 - systemd: `alexa-speak.service`。追加の Python パッケージは不要（システムの `python3` で動く）
+- 公開 URL: `https://swirhen.tv/alexa_speak/`（Apache が `127.0.0.1:8003` へ中継）。Apache 設定は dotfile リポジトリの `apache2/sites-available/000-default.conf`
 
 ### 初期導入
 
