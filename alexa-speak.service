@@ -1,0 +1,24 @@
+[Unit]
+Description=Alexa Speak API (alexa-remote-control)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=swirhen
+Group=swirhen
+WorkingDirectory=/home/swirhen/alexa_speak
+# REFRESH_TOKEN などはここに書く（root 所有・600）
+EnvironmentFile=-/etc/default/alexa-speak
+Environment=AMAZON=amazon.co.jp
+Environment=ALEXA=alexa.amazon.co.jp
+Environment=TTS_LOCALE=ja-JP
+# cookie と端末一覧の保存先（/tmp は共有なので避ける）
+Environment=TMP=/home/swirhen/.cache/alexa-remote-control
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/swirhen/alexa_speak/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
