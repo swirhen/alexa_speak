@@ -12,7 +12,7 @@
 - `admin.html`: ID の管理ページ（`/admin`、管理者の Basic 認証）。変更の操作は `X-Alexa-Speak-Admin: 1` ヘッダーが必須（ほかのサイトからの CSRF 対策）。
 - `alexa-speak.service`: systemd 定義。日本向けの環境変数と cookie の保存先もここで指定する。
 - `alexa-speak.env.example`: `/etc/default/alexa-speak` の雛形。
-- `mcp_server/server.py`: `/speak` を呼ぶ MCP サーバー（claude.ai のカスタムコネクタ用、Streamable HTTP、ツールは `speak` だけ）。認証情報は環境変数（`/etc/default/alexa-speak-mcp`）から読む。
+- `mcp_server/server.py`: `/speak` を呼ぶ MCP サーバー（複数の AI から接続する共通のリモート MCP サーバー、Streamable HTTP、ツールは `speak` だけ）。`/speak` は共通の ID `ai-web` で呼ぶ。認証情報は環境変数（`/etc/default/alexa-speak-mcp`）から読む。
 
 ## 注意
 

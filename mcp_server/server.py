@@ -1,6 +1,7 @@
 """alexa_speak の /speak を呼ぶ MCP サーバー（Streamable HTTP）。
 
-claude.ai のカスタムコネクタから接続する前提で、公開するツールは speak だけ。
+複数の AI（claude.ai のカスタムコネクタなど）から接続する共通の MCP サーバーで、公開するツールは speak だけ。
+/speak はすべて共通の ID（ai-web）で呼ぶ。
 
 環境変数
   ALEXA_SPEAK_ID / ALEXA_SPEAK_PASSWORD  /speak の Basic 認証（必須）
@@ -9,7 +10,7 @@ claude.ai のカスタムコネクタから接続する前提で、公開する�
   ALEXA_SPEAK_URL                        /speak の URL（省略時はサーバー内の API）
   ALEXA_SPEAK_MCP_PORT                   待ち受けポート（省略時は 8004）
 
-カスタムコネクタは Basic 認証のヘッダーを付けられないので、コネクタの URL に
+カスタムコネクタなどは Basic 認証のヘッダーを付けられないので、コネクタの URL に
 推測できないトークンを含めて守る。トークンを知らない接続は 404 になる。
 """
 

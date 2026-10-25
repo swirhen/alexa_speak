@@ -1,5 +1,5 @@
 [Unit]
-Description=Alexa Speak MCP server (claude.ai custom connector)
+Description=Alexa Speak MCP server (remote MCP for AI connectors)
 After=network-online.target alexa-speak.service
 Wants=network-online.target
 

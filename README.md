@@ -72,9 +72,9 @@ print(r.status_code, r.json()["ok"])
 | 502 | Alexa 側の失敗（ログイン情報の失効など） | 送り直さず、持ち主に伝える |
 | 504 | タイムアウト | 1 回だけ待ってから送り直してよい |
 
-### MCP（claude.ai のカスタムコネクタ）
+### MCP（リモート MCP サーバー）
 
-`mcp_server/` に、`/speak` を呼ぶ MCP サーバー（Streamable HTTP）があります。公開するツールは `speak`（引数は `text` と `chime`）だけです。claude.ai の「設定 → コネクタ → カスタムコネクタを追加」で、持ち主から渡された URL（`https://swirhen.tv/alexa_speak_mcp/mcp/<トークン>`）を登録すると使えます。認証の設定は不要です（URL のトークンが鍵の代わり）。
+`mcp_server/` に、`/speak` を呼ぶ MCP サーバー（Streamable HTTP）があります。公開するツールは `speak`（引数は `text` と `chime`）だけです。リモート MCP サーバーを登録できる AI（claude.ai のカスタムコネクタなど）に、持ち主から渡された URL（`https://swirhen.tv/alexa_speak_mcp/mcp/<トークン>`）を登録すると使えます。認証の設定は不要です（URL のトークンが鍵の代わり）。
 
 ## 運用者向け
 
@@ -176,16 +176,16 @@ cd /home/swirhen/alexa_speak && git pull --ff-only && sudo systemctl restart ale
 
 ### MCP サーバー（mcp_server/）
 
-claude.ai のカスタムコネクタは Basic 認証のヘッダーを付けられない（OAuth か認証なしだけ）。そのため MCP サーバーは認証なしで公開し、代わりに **URL に推測できないトークンを含める**。トークンの違う URL は 404 になる。
+複数の AI から 1 つの MCP サーバーに接続する。claude.ai のカスタムコネクタなどは Basic 認証のヘッダーを付けられない（OAuth か認証なしだけ）ので、MCP サーバーは認証なしで公開し、代わりに **URL に推測できないトークンを含める**。トークンの違う URL は 404 になる。
 
 ```
-claude.ai ──HTTPS──▶ Apache (/alexa_speak_mcp/mcp/<トークン>) ──▶ mcp_server/server.py (127.0.0.1:8004)
+AI（claude.ai など）──HTTPS──▶ Apache (/alexa_speak_mcp/mcp/<トークン>) ──▶ mcp_server/server.py (127.0.0.1:8004)
   ──Basic 認証──▶ /speak (127.0.0.1:8003)
 ```
 
-- `/speak` を呼ぶ ID とパスワードは、管理ページで MCP 用に発行した ID（`claude-web`）を使う。コードには書かず、`/etc/default/alexa-speak-mcp`（root・600、雛形は `mcp_server/alexa-speak-mcp.env.example`）から環境変数で渡す。
+- `/speak` を呼ぶ ID とパスワードは、管理ページで MCP 用に発行した共通の ID（`ai-web`）を使う。MCP 経由の読み上げは、どの AI からでもすべて `ai-web` として扱われる（AI ごとに区別したいときは、MCP を使わず `/speak` を AI ごとの ID で直接呼ぶ）。コードには書かず、`/etc/default/alexa-speak-mcp`（root・600、雛形は `mcp_server/alexa-speak-mcp.env.example`）から環境変数で渡す。
 - トークンは `ALEXA_SPEAK_MCP_PATH_TOKEN`（英数字と `_` `-` で 32 文字以上）。URL を知っていれば誰でも読み上げられるので、漏れたら作り直してコネクタを登録し直す。Apache のアクセスログには URL ごと残る。
-- 読み上げの回数制限（1 分 10 回）と記録は、`/speak` 側の ID（`claude-web`）単位でかかる。
+- 読み上げの回数制限（1 分 10 回）と記録は、`/speak` 側の ID（`ai-web`）単位でかかる。MCP につないでいるすべての AI の分をまとめて数える。
 - systemd: `alexa-speak-mcp.service`。venv は `mcp_server/.venv`（`mcp` は 2.x の `MCPServer` を使う。バージョンは `requirements.txt` で固定）。
 
 #### 初期導入
