@@ -113,12 +113,15 @@ def connector_app(inner):
             return
         m = CONNECTOR_PATH.match(scope["path"])
         if not m:
+            print(f"- {scope['method']} 404 (URL の形が違う)", flush=True)
             await _plain(send, 404, "not found")
             return
         cid, secret = m.groups()
         headers = [(k, v) for k, v in scope["headers"] if not k.startswith(HEADER_PREFIX)]
         forwarded_for = next((v.decode() for k, v in headers if k == b"x-forwarded-for"), "")
         status = await _verify(cid, secret, forwarded_for)
+        # URL には乱数が入っているので、uvicorn のアクセスログは止めて、ここで名前だけ記録する
+        print(f"{forwarded_for or '-'} connector={cid} {scope['method']} {status}", flush=True)
         if status != 200:
             await _plain(send, status, {404: "not found", 429: "too many failed attempts"}.get(status, "unavailable"))
             return
@@ -193,4 +196,4 @@ if __name__ == "__main__":
     inner = server.streamable_http_app(
         streamable_http_path="/mcp", stateless_http=True, json_response=True, host="127.0.0.1"
     )
-    uvicorn.run(connector_app(inner), host="127.0.0.1", port=PORT)
+    uvicorn.run(connector_app(inner), host="127.0.0.1", port=PORT, access_log=False)
