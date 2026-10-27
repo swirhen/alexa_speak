@@ -1,10 +1,10 @@
 # Alexa Speak
 
-[alexa-remote-control](https://github.com/thorsten-gehrig/alexa-remote-control) を HTTP から呼び、家の Amazon Echo に任意の文章を読み上げさせる API です。AI がリマインダーや通知を声で伝えるために使います。
+家の Amazon Echo に任意の文章を読み上げさせる API です。Alexa の Web API（非公式）を直接呼んでいます（[alexa-remote-control](https://github.com/thorsten-gehrig/alexa-remote-control) の処理を Python に移植したもの）。AI がリマインダーや通知を声で伝えるために使います。
 
 ```
 呼び出し元（AI など）──HTTPS + Basic 認証──▶ Apache (https://swirhen.tv/alexa_speak/)
-  ──▶ server.py (127.0.0.1:8003) ──▶ alexa_remote_control.sh ──▶ Alexa
+  ──▶ server.py (127.0.0.1:8003) ──alexa_client.py──▶ Alexa の Web API ──▶ Echo
 ```
 
 ## AI 向け：使い方
@@ -59,7 +59,6 @@ print(r.status_code, r.json()["ok"])
 - 記号・URL・絵文字・Markdown・括弧書き・箇条書きは使わない（そのまま読まれるか、変な読み方になる）。
 - 時刻は「15時30分」、日付は「10月25日」のように書く。「15:30」「10/25」は避ける。
 - 読み間違えやすい固有名詞や略語は、ひらがな・カタカナにする。
-- `* ? [ ]` は送っても取り除かれる。
 
 ### 応答とエラーへの対応
 
@@ -69,8 +68,7 @@ print(r.status_code, r.json()["ok"])
 | 400 | 文章が空・長すぎる、JSON が不正 | 直して送り直す |
 | 401 | ID かパスワードが違う | 送り直さず、持ち主に伝える |
 | 429 | 回数制限（読み上げは ID ごとに 1 分 10 回まで。認証の失敗が続いたときも） | しばらく待つ。繰り返さない |
-| 502 | Alexa 側の失敗（ログイン情報の失効など） | 送り直さず、持ち主に伝える |
-| 504 | タイムアウト | 1 回だけ待ってから送り直してよい |
+| 502 | Alexa 側の失敗（ログイン情報の失効、端末名の間違いなど。`error` に理由が入る） | 送り直さず、持ち主に伝える |
 
 ### MCP（リモート MCP サーバー）
 
@@ -86,7 +84,7 @@ URL は `https://swirhen.tv/alexa_speak/<パス>`（サーバー内からは `ht
 | --- | --- | --- |
 | GET | `/health` | 死活確認（認証なし） |
 | GET | `/admin` | ID の管理ページ（管理者でログイン） |
-| GET | `/devices` | 端末一覧（`alexa_remote_control.sh -a` の出力） |
+| GET | `/devices` | 端末一覧。`{"ok": true, "devices": [{"name": "Echo Hub", "family": "KNIGHT", "online": true}, ...]}` |
 | POST | `/speak` | `{"text": "読み上げる文章", "device": "端末名", "chime": true}`。`device` を省くと `ALEXA_DEFAULT_DEVICE` を使う。`chime` が `true`（既定）なら、文章を SSML で包んで前に `ALEXA_SPEAK_CHIME` の音を入れる。文章は 300 文字まで |
 
 ```bash
@@ -108,7 +106,6 @@ curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
 | --- | --- |
 | `REFRESH_TOKEN` | alexa-cookie-cli で取得する `Atnr|...` のトークン |
 | `ALEXA_DEFAULT_DEVICE` | `device` を省いたときの端末名（`/devices` で表示される名前） |
-| `SPEAKVOL` | 読み上げ時の音量（0 は変更しない） |
 | `ALEXA_SPEAK_CHIME` | 読み上げの前に鳴らす音。Alexa の効果音ライブラリ（[ASK Sound Library](https://developer.amazon.com/en-US/docs/alexa/custom-skills/ask-soundlibrary.html)）の `soundbank://` URL。省略時はドアチャイム（`soundbank://soundlibrary/home/amzn_sfx_doorbell_chime_01`）、空にするとチャイムなし |
 | `ALEXA_SPEAK_ADMIN` | 管理ページの管理者。`id:password` の形で書く。空なら管理ページは使えない |
 
@@ -148,7 +145,6 @@ cd $env:LOCALAPPDATA\alexa-cookie-cli; npm ci --omit=dev; npm install alexa-cook
 ### 本番
 
 - 配置先: `/home/swirhen/alexa_speak`（`prod-checker`）
-- 本体: `/home/swirhen/alexa-remote-control`（upstream をクローンしたもの。改変しない）
 - systemd: `alexa-speak.service`。追加の Python パッケージは不要（システムの `python3` で動く）
 - 公開 URL: `https://swirhen.tv/alexa_speak/`（Apache が `127.0.0.1:8003` へ中継）。Apache 設定は dotfile リポジトリの `apache2/sites-available/000-default.conf`
 
@@ -156,9 +152,7 @@ cd $env:LOCALAPPDATA\alexa-cookie-cli; npm ci --omit=dev; npm install alexa-cook
 
 ```bash
 cd /home/swirhen
-git clone https://github.com/thorsten-gehrig/alexa-remote-control.git
 git clone git@github.com:swirhen/alexa_speak.git
-mkdir -p ~/.cache/alexa-remote-control && chmod 700 ~/.cache/alexa-remote-control
 cd alexa_speak
 sudo install -m 0600 -o root -g root alexa-speak.env.example /etc/default/alexa-speak   # 値を入れる
 sudo install -m 0644 alexa-speak.service /etc/systemd/system/

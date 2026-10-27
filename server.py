@@ -1,7 +1,9 @@
-"""alexa-remote-control を HTTP 経由で呼ぶための小さな API サーバー。
+"""Amazon Echo に文章を読み上げさせる小さな API サーバー。
+
+Alexa の Web API は alexa_client.py で直接呼ぶ（alexa-remote-control の移植）。
 
 GET  /health            死活確認（認証なし）
-GET  /devices           端末一覧（alexa_remote_control.sh -a）
+GET  /devices           端末一覧
 POST /speak             {"text": "...", "device": "端末名（省略時は ALEXA_DEFAULT_DEVICE）", "chime": true}
 GET  /admin             API の ID を管理するページ（管理者の Basic 認証）
 
@@ -18,7 +20,7 @@ import json
 import os
 import re
 import secrets
-import subprocess
+import sys
 import threading
 import time
 from collections import defaultdict, deque
@@ -27,7 +29,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-SCRIPT = os.environ.get("ALEXA_SCRIPT", "/home/swirhen/alexa-remote-control/alexa_remote_control.sh")
+from alexa_client import AlexaClient, AlexaError
+
 HOST = os.environ.get("ALEXA_SPEAK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ALEXA_SPEAK_PORT", "8003"))
 DEFAULT_DEVICE = os.environ.get("ALEXA_DEFAULT_DEVICE", "")
@@ -38,7 +41,6 @@ CHIME = os.environ.get(
 CLIENTS_FILE = Path(os.environ.get("ALEXA_SPEAK_CLIENTS_FILE", Path(__file__).with_name("clients.json")))
 ADMIN_PAGE = Path(__file__).with_name("admin.html")
 MAX_TEXT = 300
-TIMEOUT = 90
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 
 # 認証の失敗は 15 分で接続元ごとに 5 回、全体で 30 回まで
@@ -57,8 +59,15 @@ def _parse_pair(value: str) -> tuple[str, str] | None:
 
 ADMIN = _parse_pair(os.environ.get("ALEXA_SPEAK_ADMIN", ""))
 
-# スクリプトは cookie・端末一覧を共有ファイルに書くので、同時に実行しない
-_lock = threading.Lock()
+if not os.environ.get("REFRESH_TOKEN", "").strip():
+    sys.exit("環境変数 REFRESH_TOKEN が空")
+ALEXA = AlexaClient(
+    refresh_token=os.environ["REFRESH_TOKEN"].strip(),
+    amazon=os.environ.get("AMAZON", "amazon.co.jp"),
+    alexa=os.environ.get("ALEXA", "alexa.amazon.co.jp"),
+    locale=os.environ.get("TTS_LOCALE", "ja-JP"),
+)
+
 # 失敗・読み上げの記録はメモリ上だけ（再起動で消える）
 _rate_lock = threading.Lock()
 _fails: dict[str, deque] = defaultdict(deque)
@@ -145,25 +154,11 @@ def _prune(q: deque, window: int, now: float) -> None:
         q.popleft()
 
 
-def run_script(*args: str) -> subprocess.CompletedProcess:
-    with _lock:
-        return subprocess.run(
-            [SCRIPT, *args], capture_output=True, text=True, timeout=TIMEOUT
-        )
-
-
-def sanitize(text: str) -> str:
-    # スクリプト内で引用符なしの echo を通るため、glob として展開される文字を除く
-    text = re.sub(r"[*?\[\]]", "", text)
-    return " ".join(text.split())
-
-
 def to_speech(text: str, chime: bool) -> str:
     """チャイムを付けるときは SSML にして、文章の前に効果音を入れる。"""
     if not (chime and CHIME):
         return text
-    # スクリプトが " を ' に置き換えるので、属性は ' で囲む
-    return f"<speak><audio src='{html.escape(CHIME)}'/>{html.escape(text, quote=False)}</speak>"
+    return f'<speak><audio src="{html.escape(CHIME)}"/>{html.escape(text, quote=False)}</speak>'
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -311,12 +306,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._authenticate():
             return
-        r = run_script("-a")
-        if r.returncode != 0:
-            self._send(502, {"ok": False, "stdout": r.stdout, "stderr": r.stderr})
+        try:
+            devices = ALEXA.list_devices()
+        except AlexaError as e:
+            self._send(502, {"ok": False, "error": str(e)})
             return
-        lines = [l for l in r.stdout.splitlines() if l.strip()]
-        self._send(200, {"ok": True, "output": lines})
+        self._send(200, {"ok": True, "devices": devices})
 
     def do_DELETE(self) -> None:
         path = urlsplit(self.path).path
@@ -339,7 +334,7 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             return
 
-        text = sanitize(str(body.get("text", "")))
+        text = " ".join(str(body.get("text", "")).split())
         device = str(body.get("device") or DEFAULT_DEVICE)
         chime = body.get("chime", True)
         if not isinstance(chime, bool):
@@ -365,16 +360,15 @@ class Handler(BaseHTTPRequestHandler):
             q.append(now)
 
         print(f"speak client={self.client_id} device={device} chime={chime} text={text}", flush=True)
+        started = time.time()
         try:
-            r = run_script("-d", device, "-e", f"speak:{to_speech(text, chime)}")
-        except subprocess.TimeoutExpired:
-            self._send(504, {"ok": False, "error": "timeout"})
+            ALEXA.speak(device, to_speech(text, chime))
+        except AlexaError as e:
+            print(f"speak failed client={self.client_id}: {e}", flush=True)
+            self._send(502, {"ok": False, "error": str(e)})
             return
-        # スクリプトは失敗しても終了コード 0 を返すことがあるので出力も返す
-        ok = r.returncode == 0 and not any(
-            s in r.stdout for s in ("ERROR", "device login process")
-        )
-        self._send(200 if ok else 502, {"ok": ok, "stdout": r.stdout, "stderr": r.stderr})
+        print(f"speak done client={self.client_id} {time.time() - started:.2f}s", flush=True)
+        self._send(200, {"ok": True})
 
     def log_message(self, fmt: str, *args) -> None:
         print(f"{self._remote_ip()} {self.client_id} {fmt % args}", flush=True)

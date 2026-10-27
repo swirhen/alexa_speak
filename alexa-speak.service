@@ -1,5 +1,5 @@
 [Unit]
-Description=Alexa Speak API (alexa-remote-control)
+Description=Alexa Speak API
 After=network-online.target
 Wants=network-online.target
 
@@ -13,8 +13,6 @@ EnvironmentFile=-/etc/default/alexa-speak
 Environment=AMAZON=amazon.co.jp
 Environment=ALEXA=alexa.amazon.co.jp
 Environment=TTS_LOCALE=ja-JP
-# cookie と端末一覧の保存先（/tmp は共有なので避ける）
-Environment=TMP=/home/swirhen/.cache/alexa-remote-control
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /home/swirhen/alexa_speak/server.py
 Restart=on-failure
