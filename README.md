@@ -131,7 +131,7 @@ curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
 - トークンは `alexa_token.json`（リポジトリ直下、Git 管理外、権限 600）に保存する。このファイルが無いときは、`/etc/default/alexa-speak` の `REFRESH_TOKEN` を使う。
 - ログインと端末登録は、日本のアカウントでも amazon.com で行う（amazon.co.jp で行うと認可コードが付かない）。
 - ログイン ID（メールアドレス・電話番号）が US などほかの国のアカウントと同じだと、そちらのアカウントとして扱われる。JP アカウントだけで使っている ID でログインする。登録したときに「アカウントの国」が表示されるので、日本になっているか確かめる。
-- ログインするたびに、Amazon のアカウントに端末（`alexa_speak`）が 1 つ登録される。やり直したときは、古いものを Amazon の「コンテンツと端末」から外しておく。
+- ログインするたびに、Amazon のアカウントに端末（`alexa_speak`）が 1 つ登録される。この端末は Amazon の「コンテンツと端末」の Web ページには出てこない。不要になった古いトークンは、そのトークンでアクセストークンを取り（`POST https://api.amazon.com/auth/token`）、`POST https://api.amazon.com/auth/deregister`（`Authorization: Bearer <アクセストークン>`、本文 `{"deregister_all_existing_accounts": false}`）で解除できる。解除後は cookie への交換が `InvalidToken` になる。
 - 処理は alexa-cookie2（https://github.com/Apollon77/alexa-cookie）の登録処理を移植したもの（`alexa_auth.py`）。ログインできなくなったら、その `lib/proxy.js`（ログイン URL）と `alexa-cookie.js` の `handleTokenRegistration` を見比べる。
 
 ### 本番
