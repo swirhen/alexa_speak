@@ -20,7 +20,6 @@ import json
 import os
 import re
 import secrets
-import sys
 import threading
 import time
 from collections import defaultdict, deque
@@ -29,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from alexa_auth import AuthError, LoginResult, PendingLogin, finish_login, start_login
 from alexa_client import AlexaClient, AlexaError
 
 HOST = os.environ.get("ALEXA_SPEAK_HOST", "127.0.0.1")
@@ -39,6 +39,9 @@ CHIME = os.environ.get(
     "ALEXA_SPEAK_CHIME", "soundbank://soundlibrary/home/amzn_sfx_doorbell_chime_01"
 ).strip()
 CLIENTS_FILE = Path(os.environ.get("ALEXA_SPEAK_CLIENTS_FILE", Path(__file__).with_name("clients.json")))
+TOKEN_FILE = Path(os.environ.get("ALEXA_SPEAK_TOKEN_FILE", Path(__file__).with_name("alexa_token.json")))
+# ログイン用 URL を出してから貼り付けを受け付けるまでの時間
+LOGIN_PENDING_TTL = 30 * 60
 ADMIN_PAGE = Path(__file__).with_name("admin.html")
 MAX_TEXT = 300
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
@@ -59,14 +62,45 @@ def _parse_pair(value: str) -> tuple[str, str] | None:
 
 ADMIN = _parse_pair(os.environ.get("ALEXA_SPEAK_ADMIN", ""))
 
-if not os.environ.get("REFRESH_TOKEN", "").strip():
-    sys.exit("環境変数 REFRESH_TOKEN が空")
-ALEXA = AlexaClient(
-    refresh_token=os.environ["REFRESH_TOKEN"].strip(),
-    amazon=os.environ.get("AMAZON", "amazon.co.jp"),
-    alexa=os.environ.get("ALEXA", "alexa.amazon.co.jp"),
-    locale=os.environ.get("TTS_LOCALE", "ja-JP"),
-)
+class TokenStore:
+    """refresh_token を alexa_token.json で持つ。無ければ環境変数 REFRESH_TOKEN を使う。
+
+    管理ページからログインし直したときに、サービス自身が書き換えられるようにするため、
+    /etc/default ではなくリポジトリ直下（Git 管理外、権限 600）に置く。
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        if path.exists():
+            self.data = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            token = os.environ.get("REFRESH_TOKEN", "").strip()
+            self.data = {"refresh_token": token, "source": "env" if token else "", "updated": None,
+                         "account_pool": "", "customer_name": ""}
+
+    @property
+    def token(self) -> str:
+        return self.data.get("refresh_token", "")
+
+    def save(self, result: LoginResult) -> None:
+        self.data = {"refresh_token": result.refresh_token, "source": "admin", "updated": _now(),
+                     "account_pool": result.account_pool, "customer_name": result.customer_name}
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+
+    def info(self) -> dict:
+        return {k: v for k, v in self.data.items() if k != "refresh_token"} | {"has_token": bool(self.token)}
+
+
+def _new_alexa_client(token: str) -> AlexaClient:
+    return AlexaClient(
+        refresh_token=token,
+        amazon=os.environ.get("AMAZON", "amazon.co.jp"),
+        alexa=os.environ.get("ALEXA", "alexa.amazon.co.jp"),
+        locale=os.environ.get("TTS_LOCALE", "ja-JP"),
+    )
 
 # 失敗・読み上げの記録はメモリ上だけ（再起動で消える）
 _rate_lock = threading.Lock()
@@ -147,6 +181,19 @@ class ClientStore:
 
 
 STORE = ClientStore(CLIENTS_FILE)
+TOKENS = TokenStore(TOKEN_FILE)
+ALEXA = _new_alexa_client(TOKENS.token)
+
+# 管理ページからの Amazon ログインの途中経過（同時に進めるのは 1 件だけ）
+_login_lock = threading.Lock()
+_pending_login: tuple[PendingLogin, float] | None = None
+_last_alexa_error = ""
+
+
+def _record_alexa_error(e: Exception) -> None:
+    """管理ページに「最後に失敗した理由」として出す。"""
+    global _last_alexa_error
+    _last_alexa_error = f"{_now()} {e}"
 
 
 def _prune(q: deque, window: int, now: float) -> None:
@@ -251,9 +298,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "clients": STORE.list()})
             return
 
+        if path == "/admin/api/alexa" and method == "GET":
+            self._send(200, {"ok": True, **TOKENS.info(), "last_error": _last_alexa_error,
+                             "login_pending": _pending_login is not None})
+            return
+
         # 変更の操作は、ほかのサイトのフォームから送れないよう専用ヘッダーを必須にする
         if self.headers.get("X-Alexa-Speak-Admin") != "1":
             self._send(403, {"ok": False, "error": "missing X-Alexa-Speak-Admin header"})
+            return
+        if path.startswith("/admin/api/alexa/") and method == "POST":
+            self._admin_alexa(path)
             return
         m = re.fullmatch(r"/admin/api/clients(?:/([^/]+)(/reset)?)?", path)
         if not m:
@@ -291,6 +346,56 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(405, {"ok": False, "error": "method not allowed"})
 
+    def _admin_alexa(self, path: str) -> None:
+        global _pending_login, _last_alexa_error
+        if path == "/admin/api/alexa/check":
+            try:
+                devices = ALEXA.check()
+            except AlexaError as e:
+                _record_alexa_error(e)
+                self._send(502, {"ok": False, "error": str(e)})
+                return
+            _last_alexa_error = ""
+            self._send(200, {"ok": True, "devices": [d["name"] for d in devices]})
+        elif path == "/admin/api/alexa/login/start":
+            pending = start_login()
+            with _login_lock:
+                _pending_login = (pending, time.time())
+            print(f"admin {self.client_id} started amazon login", flush=True)
+            self._send(200, {"ok": True, "url": pending.url})
+        elif path == "/admin/api/alexa/login/finish":
+            body = self._read_json()
+            if body is None:
+                return
+            with _login_lock:
+                current = _pending_login
+            if current is None or time.time() - current[1] > LOGIN_PENDING_TTL:
+                self._send(409, {"ok": False, "error": "ログインを開始していないか、時間が経ちすぎた。「Amazon にログイン」からやり直す"})
+                return
+            try:
+                result = finish_login(current[0], str(body.get("url", "")))
+            except AuthError as e:
+                self._send(400, {"ok": False, "error": str(e)})
+                return
+            # 保存する前に、新しいトークンで実際にログインと端末一覧の取得ができるか確かめる
+            trial = _new_alexa_client(result.refresh_token)
+            try:
+                devices = trial.check()
+            except AlexaError as e:
+                self._send(502, {"ok": False, "error": f"取得したトークンでログインできなかった"
+                                 f"（アカウントの国: {result.account_pool or '不明'}）: {e}"})
+                return
+            TOKENS.save(result)
+            ALEXA.set_refresh_token(result.refresh_token)
+            with _login_lock:
+                _pending_login = None
+            _last_alexa_error = ""
+            print(f"admin {self.client_id} updated amazon token ({result.account_pool})", flush=True)
+            self._send(200, {"ok": True, "account_pool": result.account_pool,
+                             "customer_name": result.customer_name, "devices": [d["name"] for d in devices]})
+        else:
+            self._send(404, {"ok": False, "error": "not found"})
+
     # ---- API ----
 
     def do_GET(self) -> None:
@@ -309,6 +414,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             devices = ALEXA.list_devices()
         except AlexaError as e:
+            _record_alexa_error(e)
             self._send(502, {"ok": False, "error": str(e)})
             return
         self._send(200, {"ok": True, "devices": devices})
@@ -364,6 +470,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             ALEXA.speak(device, to_speech(text, chime))
         except AlexaError as e:
+            _record_alexa_error(e)
             print(f"speak failed client={self.client_id}: {e}", flush=True)
             self._send(502, {"ok": False, "error": str(e)})
             return

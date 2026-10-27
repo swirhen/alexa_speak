@@ -9,6 +9,7 @@
 ## 主なファイル
 
 - `server.py`: API サーバー（標準ライブラリのみ）。API の ID は `ClientStore` が `clients.json` で管理する。
+- `alexa_auth.py`: Amazon へのログイン（alexa-cookie2 の端末登録の移植）。ログイン URL を作り、貼り付けられた `/ap/maplanding` の URL から認可コードを取り出して `/auth/register` で refresh_token を受け取る。プロキシは使わない。
 - `alexa_client.py`: Alexa の Web API のクライアント（標準ライブラリのみ）。refresh_token → cookie の交換、csrf・customerId の取得、端末一覧、`Alexa.Speak` の送信。cookie と端末一覧はメモリ上に持つ。
 - `admin.html`: ID の管理ページ（`/admin`、管理者の Basic 認証）。変更の操作は `X-Alexa-Speak-Admin: 1` ヘッダーが必須（ほかのサイトからの CSRF 対策）。
 - `alexa-speak.service`: systemd 定義。日本向けの環境変数（`AMAZON`・`ALEXA`・`TTS_LOCALE`）もここで指定する。
@@ -17,11 +18,11 @@
 
 ## 注意
 
-- `REFRESH_TOKEN`・`ALEXA_SPEAK_ADMIN`・`ALEXA_SPEAK_PASSWORD`・`ALEXA_SPEAK_MCP_PATH_TOKEN` の値と `clients.json` は表示・コミットしない。
+- `REFRESH_TOKEN`・`ALEXA_SPEAK_ADMIN`・`ALEXA_SPEAK_PASSWORD`・`ALEXA_SPEAK_MCP_PATH_TOKEN` の値と `clients.json`・`alexa_token.json` は表示・コミットしない。
 - MCP サーバーは URL のトークンだけで守っている。公開するツールを増やすときは、URL を知った人に何ができるようになるかを考えること。
 - API は `https://swirhen.tv/alexa_speak/` で外部に公開している。`/health` 以外は必ず Basic 認証を通すこと（認証なしの読み上げ口を作らない）。
-- Alexa の Web API は非公式で、予告なく変わる。読み上げや端末一覧が急に失敗するようになったら、まず upstream の alexa-remote-control（https://github.com/thorsten-gehrig/alexa-remote-control）の最新版の `log_in` / `get_devlist` / `check_status` / `run_cmd` と `alexa_client.py` を見比べる。
+- Alexa の Web API は非公式で、予告なく変わる。読み上げや端末一覧が急に失敗するようになったら、まず upstream の alexa-remote-control（https://github.com/thorsten-gehrig/alexa-remote-control）の最新版の `log_in` / `get_devlist` / `check_status` / `run_cmd` と `alexa_client.py` を見比べる。管理ページからの Amazon ログインが失敗するようになったら、alexa-cookie2（https://github.com/Apollon77/alexa-cookie）の `lib/proxy.js` と `alexa-cookie.js` の `handleTokenRegistration` を `alexa_auth.py` と見比べる。
 
 ## 検証
 
-- 変更後は `python -m py_compile server.py alexa_client.py mcp_server/server.py` を実行する。
+- 変更後は `python -m py_compile server.py alexa_client.py alexa_auth.py mcp_server/server.py` を実行する。

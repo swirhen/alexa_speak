@@ -92,9 +92,26 @@ class AlexaClient:
             expires=None, discard=True, comment=None, comment_url=None, rest={}, rfc2109=False,
         ))
 
+    def set_refresh_token(self, refresh_token: str) -> None:
+        """トークンを差し替え、次の呼び出しでログインし直させる。"""
+        with self.lock:
+            self.refresh_token = refresh_token
+            self.customer_id = ""
+            self.jar.clear()
+            self.devices, self.devices_at = [], 0.0
+
+    def check(self) -> list[dict]:
+        """ログインし直してから端末一覧を取る（トークンが使えるかの確認用）。"""
+        with self.lock:
+            self._ensure_login(force=True)
+            return self._summarize(self._load_devices(refresh=True))
+
     def _login(self) -> None:
         self.jar.clear()
         self.devices, self.devices_at = [], 0.0
+        self.customer_id = ""
+        if not self.refresh_token:
+            raise AlexaError("Amazon にログインしていない。管理ページの「Amazon にログイン」から設定する")
 
         form = urllib.parse.urlencode({
             "app_name": "Amazon Alexa",
@@ -158,13 +175,16 @@ class AlexaClient:
             self.devices_at = time.time()
         return self.devices
 
-    def list_devices(self) -> list[dict]:
-        with self.lock:
-            devices = self._load_devices(refresh=True)
+    @staticmethod
+    def _summarize(devices: list[dict]) -> list[dict]:
         return [
             {"name": d.get("accountName"), "family": d.get("deviceFamily"), "online": d.get("online")}
             for d in devices
         ]
+
+    def list_devices(self) -> list[dict]:
+        with self.lock:
+            return self._summarize(self._load_devices(refresh=True))
 
     def _targets(self, name: str) -> list[tuple[str, str]]:
         """端末名から、命令を送る (deviceType, serialNumber) の一覧を返す。"""

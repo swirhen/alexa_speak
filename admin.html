@@ -34,6 +34,14 @@
   #issued p { margin: 0 0 8px; }
   pre { margin: 0 0 8px; padding: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font: 13px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
   #msg { min-height: 1.6em; color: var(--danger); font-size: 14px; margin: 8px 0 0; }
+  .err { color: var(--danger); font-size: 14px; margin: 4px 0 8px; white-space: pre-wrap; word-break: break-all; }
+  .err:empty { display: none; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .steps { display: none; margin: 14px 0 0; padding-left: 20px; }
+  .steps li { margin-bottom: 8px; }
+  .steps form { margin-top: 8px; }
+  .ok-text { color: var(--fg); }
+  a { color: var(--accent); }
   @media (max-width: 560px) {
     th.used, td.used { display: none; }
   }
@@ -52,6 +60,26 @@
     <p class="muted" style="margin-top:12px">呼び出し例</p>
     <pre id="issued-curl"></pre>
     <button id="copy-curl">呼び出し例をコピー</button>
+  </section>
+
+  <section>
+    <h2>Amazon のログイン</h2>
+    <p id="alexa-status" class="muted">確認中…</p>
+    <p id="alexa-error" class="err"></p>
+    <div class="row">
+      <button id="alexa-check">接続を確認</button>
+      <button id="alexa-start" class="primary">Amazon にログイン</button>
+    </div>
+    <ol id="alexa-steps" class="steps">
+      <li><a id="alexa-link" href="#" target="_blank" rel="noopener noreferrer">Amazon のログイン画面を開く</a>（別のタブで開きます）。<b>日本のアカウント</b>のメールアドレスでログインする。英語の画面でも構いません。</li>
+      <li>ログインが終わると「ページが見つかりません」と出るので、そのときの<b>アドレスバーの URL をまるごとコピー</b>する。</li>
+      <li>下に貼り付けて「登録」を押す（認可コードは数分で使えなくなるので、すぐに）。
+        <form id="alexa-finish">
+          <input id="alexa-url" placeholder="https://www.amazon.com/ap/maplanding?..." autocomplete="off" required>
+          <button class="primary" type="submit">登録</button>
+        </form>
+      </li>
+    </ol>
   </section>
 
   <section>
@@ -158,7 +186,56 @@ async function del(id) {
   catch (e) { alert(e.message); }
 }
 
+// ---- Amazon のログイン ----
+const ALEXA_API = 'admin/api/alexa';
+const POOLS = { AmazonJP: '日本', Amazon: 'アメリカ', AmazonEU: 'ヨーロッパ' };
+
+async function loadAlexa() {
+  try {
+    const s = await call('GET', ALEXA_API);
+    let text;
+    if (!s.has_token) text = 'まだログインしていません。「Amazon にログイン」から設定してください。';
+    else if (s.source === 'env') text = '設定ファイル（REFRESH_TOKEN）のトークンを使っています。';
+    else text = `${fmt(s.updated)} にログインしたトークンを使っています`
+      + (s.account_pool ? `（アカウントの国: ${POOLS[s.account_pool] || s.account_pool}）` : '') + '。';
+    $('alexa-status').textContent = text;
+    $('alexa-error').textContent = s.last_error ? '最後に失敗した理由: ' + s.last_error : '';
+  } catch (e) { $('alexa-status').textContent = '状態を読み込めませんでした: ' + e.message; }
+}
+
+$('alexa-check').onclick = async () => {
+  const btn = $('alexa-check'); btn.disabled = true; btn.textContent = '確認中…';
+  try {
+    const r = await call('POST', `${ALEXA_API}/check`);
+    alert(`接続できました。端末: ${r.devices.join('、')}`);
+  } catch (e) { alert('接続できませんでした: ' + e.message); }
+  btn.disabled = false; btn.textContent = '接続を確認';
+  loadAlexa();
+};
+
+$('alexa-start').onclick = async () => {
+  try {
+    const r = await call('POST', `${ALEXA_API}/login/start`);
+    $('alexa-link').href = r.url;
+    $('alexa-steps').style.display = 'block';
+    $('alexa-url').value = '';
+  } catch (e) { alert(e.message); }
+};
+
+$('alexa-finish').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const btn = ev.submitter || ev.target.querySelector('button'); btn.disabled = true;
+  try {
+    const r = await call('POST', `${ALEXA_API}/login/finish`, { url: $('alexa-url').value });
+    $('alexa-steps').style.display = 'none';
+    alert(`登録しました（アカウントの国: ${POOLS[r.account_pool] || r.account_pool || '不明'}）。\n端末: ${r.devices.join('、')}`);
+  } catch (e) { alert('登録できませんでした: ' + e.message); }
+  btn.disabled = false;
+  loadAlexa();
+};
+
 load();
+loadAlexa();
 </script>
 </body>
 </html>

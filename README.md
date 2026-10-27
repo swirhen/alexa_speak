@@ -104,7 +104,7 @@ curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
 
 | キー | 内容 |
 | --- | --- |
-| `REFRESH_TOKEN` | alexa-cookie-cli で取得する `Atnr|...` のトークン |
+| `REFRESH_TOKEN` | Amazon の `Atnr|...` のトークン。通常は空でよい（管理ページからログインすると `alexa_token.json` に保存され、そちらが優先される） |
 | `ALEXA_DEFAULT_DEVICE` | `device` を省いたときの端末名（`/devices` で表示される名前） |
 | `ALEXA_SPEAK_CHIME` | 読み上げの前に鳴らす音。Alexa の効果音ライブラリ（[ASK Sound Library](https://developer.amazon.com/en-US/docs/alexa/custom-skills/ask-soundlibrary.html)）の `soundbank://` URL。省略時はドアチャイム（`soundbank://soundlibrary/home/amzn_sfx_doorbell_chime_01`）、空にするとチャイムなし |
 | `ALEXA_SPEAK_ADMIN` | 管理ページの管理者。`id:password` の形で書く。空なら管理ページは使えない |
@@ -117,30 +117,22 @@ curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
 - ID は `clients.json`（リポジトリ直下、Git 管理外、権限 600）に保存する。
 - `clients.json` が無い状態で起動すると、`ALEXA_SPEAK_CLIENTS`（`id:password` のカンマ区切り。以前の設定方法）の ID を取り込む。
 
-日本向けの設定（`AMAZON=amazon.co.jp` など）と cookie の保存先は `alexa-speak.service` に書いています。
+日本向けの設定（`AMAZON=amazon.co.jp` など）は `alexa-speak.service` に書いています。
 
-#### REFRESH_TOKEN の取得
+#### Amazon へのログイン（REFRESH_TOKEN の取得）
 
-[alexa-cookie-cli](https://github.com/adn77/alexa-cookie-cli) を手元の PC で実行し、表示された `http://127.0.0.1:8080` で Amazon にログインします。「cookie が取れた」旨のページが出たら成功で、ターミナルに `refreshToken: Atnr|...` が出ます（その後も CPU を使い続けるので Ctrl+C で止める）。
+管理ページの「Amazon のログイン」から行う。初回と、トークンが使えなくなったとき（Amazon のパスワードを変えた、Amazon 側で端末登録を外した、など）にだけ必要。cookie は refresh_token から毎日自動で作り直すので、cookie の期限切れでやり直す必要はない。
 
-```
-alexa-cookie-cli -p amazon.co.jp -b amazon.com -a ja_JP -L ja-JP -B 127.0.0.1
-```
+1. 「Amazon にログイン」を押し、表示されたリンクから Amazon のログイン画面を開く（普段のブラウザで、スマホでもよい）。
+2. **日本のアカウント**でログインする。2 段階認証も Amazon の画面でそのまま済ませる。
+3. ログインが終わると「ページが見つかりません」と出る。そのときのアドレスバーの URL（`https://www.amazon.com/ap/maplanding?...openid.oa2.authorization_code=...`）をまるごとコピーし、管理ページに貼って「登録」を押す。認可コードは数分で使えなくなるので、すぐに貼る。
+4. サーバーが Amazon に端末として登録して refresh_token を受け取り、そのトークンでログインと端末一覧の取得ができることを確かめてから保存し、すぐに使い始める。
 
-- `-b`（ログイン窓口）は日本のアカウントでも **amazon.com** にする。`amazon.co.jp` にすると、ログイン後の `/ap/maplanding` に認可コードが付かず「有効なページではない」と出て失敗する。`-p`（Alexa を使う国）は `amazon.co.jp`。
-- ログイン ID（メールアドレス・電話番号）が US などほかの国のアカウントと同じだと、そちらのアカウントとして扱われる。JP アカウントだけで使っている ID でログインする。
-- `-B 127.0.0.1` を付けないと、ログイン用のプロキシが LAN に公開される。
-
-v5.0.5 の Windows 版 exe は起動時に `V8 rejected the bytecode cache` で落ちるため、ソースを Node.js で動かす。alexa-cookie2 は 2段階認証での 404 が直った 5.0.6 以上にする。
-
-```powershell
-git clone --depth 1 --branch v5.0.5 https://github.com/adn77/alexa-cookie-cli.git $env:LOCALAPPDATA\alexa-cookie-cli
-cd $env:LOCALAPPDATA\alexa-cookie-cli; npm ci --omit=dev; npm install alexa-cookie2@5.0.6 --omit=dev --no-save
-# PATH の通ったフォルダに alexa-cookie-cli.cmd を置く
-# 中身: @node "%LOCALAPPDATA%\alexa-cookie-cli\alexa-cookie-cli.js" %*
-```
-
-パスワード変更などで失効したら取り直して `/etc/default/alexa-speak` を書き換え、サービスを再起動します。
+- トークンは `alexa_token.json`（リポジトリ直下、Git 管理外、権限 600）に保存する。このファイルが無いときは、`/etc/default/alexa-speak` の `REFRESH_TOKEN` を使う。
+- ログインと端末登録は、日本のアカウントでも amazon.com で行う（amazon.co.jp で行うと認可コードが付かない）。
+- ログイン ID（メールアドレス・電話番号）が US などほかの国のアカウントと同じだと、そちらのアカウントとして扱われる。JP アカウントだけで使っている ID でログインする。登録したときに「アカウントの国」が表示されるので、日本になっているか確かめる。
+- ログインするたびに、Amazon のアカウントに端末（`alexa_speak`）が 1 つ登録される。やり直したときは、古いものを Amazon の「コンテンツと端末」から外しておく。
+- 処理は alexa-cookie2（https://github.com/Apollon77/alexa-cookie）の登録処理を移植したもの（`alexa_auth.py`）。ログインできなくなったら、その `lib/proxy.js`（ログイン URL）と `alexa-cookie.js` の `handleTokenRegistration` を見比べる。
 
 ### 本番
 
@@ -154,11 +146,13 @@ cd $env:LOCALAPPDATA\alexa-cookie-cli; npm ci --omit=dev; npm install alexa-cook
 cd /home/swirhen
 git clone git@github.com:swirhen/alexa_speak.git
 cd alexa_speak
-sudo install -m 0600 -o root -g root alexa-speak.env.example /etc/default/alexa-speak   # 値を入れる
+sudo install -m 0600 -o root -g root alexa-speak.env.example /etc/default/alexa-speak   # ALEXA_SPEAK_ADMIN などを入れる
 sudo install -m 0644 alexa-speak.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now alexa-speak.service
 ```
+
+そのあと管理ページを開き、「Amazon のログイン」からログインする。
 
 #### 更新のリリース
 
