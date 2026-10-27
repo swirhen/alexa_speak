@@ -34,6 +34,9 @@ from alexa_client import AlexaClient, AlexaError
 
 HOST = os.environ.get("ALEXA_SPEAK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ALEXA_SPEAK_PORT", "8003"))
+# MCP サーバーを公開している URL（例: https://example.com/alexa_speak_mcp）。管理ページでコネクタの
+# URL を表示するのに使う。空なら、管理ページと同じ階層の ../alexa_speak_mcp とみなす
+MCP_PUBLIC_URL = os.environ.get("ALEXA_SPEAK_MCP_PUBLIC_URL", "").strip().rstrip("/")
 SETTINGS_FILE = Path(os.environ.get("ALEXA_SPEAK_SETTINGS_FILE", Path(__file__).with_name("settings.json")))
 # 読み上げの前に鳴らす音（Alexa の効果音ライブラリの soundbank:// URL）。空ならチャイムなし
 CHIME = os.environ.get(
@@ -151,7 +154,7 @@ def _hash(password: str, salt: str) -> str:
 class ClientStore:
     """API の ID とパスワード（ハッシュ）を clients.json で持つ。
 
-    kind が "mcp" の ID は MCP コネクタ用。コネクタの URL（/alexa_speak_mcp/mcp/<ID>/<パスワード>）に
+    kind が "mcp" の ID は MCP コネクタ用。コネクタの URL（<MCP サーバーの公開 URL>/mcp/<ID>/<パスワード>）に
     含めて渡し、MCP サーバーがそれをそのまま /speak の Basic 認証に使う。
     """
 
@@ -339,7 +342,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if path == "/admin/api/clients" and method == "GET":
-            self._send(200, {"ok": True, "clients": STORE.list()})
+            self._send(200, {"ok": True, "clients": STORE.list(), "mcp_public_url": MCP_PUBLIC_URL})
             return
 
         if path == "/admin/api/alexa" and method == "GET":

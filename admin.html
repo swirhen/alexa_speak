@@ -144,8 +144,9 @@
 <script>
 const API = 'admin/api/clients';
 const SPEAK_URL = new URL('speak', location.href).href;
-// MCP サーバーは /alexa_speak_mcp/ で公開している（管理ページは /alexa_speak/admin）
-const MCP_BASE = new URL('../alexa_speak_mcp/mcp/', location.href).href;
+// MCP サーバーの公開 URL。サーバーの ALEXA_SPEAK_MCP_PUBLIC_URL が空なら、管理ページ（.../admin）と
+// 同じ階層の ../alexa_speak_mcp とみなす
+let MCP_BASE = new URL('../alexa_speak_mcp/mcp/', location.href).href;
 const $ = (id) => document.getElementById(id);
 
 async function call(method, url, body) {
@@ -184,7 +185,8 @@ function fillList(tbody, clients, kind) {
 
 async function load() {
   try {
-    const { clients } = await call('GET', API);
+    const { clients, mcp_public_url } = await call('GET', API);
+    if (mcp_public_url) MCP_BASE = `${mcp_public_url}/mcp/`;
     fillList($('list-api'), clients.filter((c) => c.kind !== 'mcp'), 'api');
     fillList($('list-mcp'), clients.filter((c) => c.kind === 'mcp'), 'mcp');
   } catch (e) {
