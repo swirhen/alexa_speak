@@ -5,7 +5,8 @@ Alexa の Web API は alexa_client.py で直接呼ぶ（alexa-remote-control の
 GET  /health            死活確認（認証なし）
 GET  /devices           端末一覧
 POST /speak             {"text": "...", "device": "端末名（省略時は管理ページで決めた既定の端末）", "chime": true}
-GET  /admin             API の ID を管理するページ（管理者の Basic 認証）
+GET  /whoami            Basic 認証の ID と種類（MCP サーバーがコネクタの URL を確かめるのに使う）
+GET  /admin             API の ID・MCP コネクタ・読み上げの設定・Amazon のログインを管理するページ（管理者の Basic 認証）
 
 /devices と /speak は、管理ページで発行した ID とパスワードの Basic 認証が必要。
 ID は clients.json にパスワードのハッシュで保存する。管理者は ALEXA_SPEAK_ADMIN に
@@ -148,7 +149,11 @@ def _hash(password: str, salt: str) -> str:
 
 
 class ClientStore:
-    """API の ID とパスワード（ハッシュ）を clients.json で持つ。"""
+    """API の ID とパスワード（ハッシュ）を clients.json で持つ。
+
+    kind が "mcp" の ID は MCP コネクタ用。コネクタの URL（/alexa_speak_mcp/mcp/<ID>/<パスワード>）に
+    含めて渡し、MCP サーバーがそれをそのまま /speak の Basic 認証に使う。
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -164,9 +169,9 @@ class ClientStore:
                     self._set_password(pair[0], pair[1])
             self._save()
 
-    def _set_password(self, cid: str, password: str) -> None:
+    def _set_password(self, cid: str, password: str, kind: str = "api") -> None:
         salt = secrets.token_hex(16)
-        entry = self.clients.setdefault(cid, {"created": _now(), "last_used": None})
+        entry = self.clients.setdefault(cid, {"created": _now(), "last_used": None, "kind": kind})
         entry["salt"] = salt
         entry["hash"] = _hash(password, salt)
 
@@ -176,29 +181,37 @@ class ClientStore:
         os.chmod(tmp, 0o600)
         os.replace(tmp, self.path)
 
-    def verify(self, cid: str, password: str) -> bool:
+    def verify(self, cid: str, password: str, touch: bool = True) -> bool:
         with self.lock:
             entry = self.clients.get(cid)
             if not entry or not hmac.compare_digest(_hash(password, entry["salt"]), entry["hash"]):
                 return False
-            entry["last_used"] = _now()
-            self._save()
+            if touch:
+                entry["last_used"] = _now()
+                self._save()
             return True
+
+    def kind(self, cid: str) -> str:
+        with self.lock:
+            return self.clients.get(cid, {}).get("kind", "api")
 
     def list(self) -> list[dict]:
         with self.lock:
             return [
-                {"id": cid, "created": e["created"], "last_used": e["last_used"]}
+                {"id": cid, "created": e["created"], "last_used": e["last_used"], "kind": e.get("kind", "api")}
                 for cid, e in sorted(self.clients.items())
             ]
 
-    def issue(self, cid: str, new: bool) -> str | None:
+    def issue(self, cid: str, new: bool, kind: str = "api") -> str | None:
         """new=True は追加（既にあれば None）、False は再発行（無ければ None）。"""
         with self.lock:
             if (cid in self.clients) == new:
                 return None
-            password = secrets.token_hex(24)
-            self._set_password(cid, password)
+            if not new:
+                kind = self.clients[cid].get("kind", "api")
+            # MCP コネクタのパスワードは URL に入るだけで人が打たないので、長めにする
+            password = secrets.token_hex(32 if kind == "mcp" else 24)
+            self._set_password(cid, password, kind)
             self._save()
             return password
 
@@ -260,8 +273,8 @@ class Handler(BaseHTTPRequestHandler):
             return forwarded.split(",")[-1].strip()
         return self.client_address[0]
 
-    def _authenticate(self, admin: bool = False) -> bool:
-        """認証に失敗したときは応答まで送って False を返す。"""
+    def _authenticate(self, admin: bool = False, touch: bool = True) -> bool:
+        """認証に失敗したときは応答まで送って False を返す。touch=False なら最終使用日時を更新しない。"""
         if admin and ADMIN is None:
             self._send(404, {"ok": False, "error": "not found"})
             return False
@@ -286,7 +299,7 @@ class Handler(BaseHTTPRequestHandler):
                 password.encode(), ADMIN[1].encode()
             )
         else:
-            ok = STORE.verify(cid, password)
+            ok = STORE.verify(cid, password, touch)
         if ok:
             self.client_id = f"admin:{cid}" if admin else cid
             return True
@@ -358,19 +371,23 @@ class Handler(BaseHTTPRequestHandler):
             if not CLIENT_ID_RE.match(cid):
                 self._send(400, {"ok": False, "error": "ID は英数字と _ . - で 32 文字まで"})
                 return
-            password = STORE.issue(cid, new=True)
+            kind = body.get("kind", "api")
+            if kind not in ("api", "mcp"):
+                self._send(400, {"ok": False, "error": "kind は api か mcp"})
+                return
+            password = STORE.issue(cid, new=True, kind=kind)
             if password is None:
                 self._send(409, {"ok": False, "error": "その ID は既にある"})
                 return
-            print(f"admin {self.client_id} created client {cid}", flush=True)
-            self._send(200, {"ok": True, "id": cid, "password": password})
+            print(f"admin {self.client_id} created {kind} client {cid}", flush=True)
+            self._send(200, {"ok": True, "id": cid, "kind": kind, "password": password})
         elif method == "POST" and cid and reset:
             password = STORE.issue(cid, new=False)
             if password is None:
                 self._send(404, {"ok": False, "error": "その ID は無い"})
                 return
             print(f"admin {self.client_id} reset client {cid}", flush=True)
-            self._send(200, {"ok": True, "id": cid, "password": password})
+            self._send(200, {"ok": True, "id": cid, "kind": STORE.kind(cid), "password": password})
         elif method == "DELETE" and cid and not reset:
             if not STORE.delete(cid):
                 self._send(404, {"ok": False, "error": "その ID は無い"})
@@ -478,6 +495,11 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/health":
             self._send(200, {"ok": True})
+            return
+        if path == "/whoami":
+            # MCP サーバーが、コネクタの URL に含まれる ID とパスワードを確かめるのに使う
+            if self._authenticate(touch=False):
+                self._send(200, {"ok": True, "id": self.client_id, "kind": STORE.kind(self.client_id)})
             return
         if path == "/admin" or path.startswith("/admin/"):
             self._admin("GET", path)

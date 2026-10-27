@@ -33,7 +33,9 @@
   #issued { display: none; background: var(--ok-bg); border-color: var(--ok-line); }
   #issued p { margin: 0 0 8px; }
   pre { margin: 0 0 8px; padding: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font: 13px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
-  #msg { min-height: 1.6em; color: var(--danger); font-size: 14px; margin: 8px 0 0; }
+  .msg { min-height: 1.6em; color: var(--danger); font-size: 14px; margin: 8px 0 0; }
+  .add { margin-top: 10px; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 0.95em; }
   .err { color: var(--danger); font-size: 14px; margin: 4px 0 8px; white-space: pre-wrap; word-break: break-all; }
   .err:empty { display: none; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -59,16 +61,17 @@
 <body>
 <main>
   <h1>Alexa Speak 管理</h1>
-  <p class="sub">読み上げ API を使う ID（呼び出し元の AI ごと）を管理します。パスワードは発行したときだけ表示されます。</p>
+  <p class="sub">読み上げ API を使う ID と MCP コネクタ（呼び出し元の AI ごと）、読み上げの設定、Amazon のログインを管理します。パスワードやコネクタの URL は発行したときだけ表示されます。</p>
 
   <section id="issued">
-    <h2>パスワードを発行しました</h2>
+    <h2 id="issued-title">発行しました</h2>
     <p>この画面を離れると二度と表示されません。いま控えてください。</p>
-    <pre id="issued-cred"></pre>
-    <button id="copy-cred">ID とパスワードをコピー</button>
-    <p class="muted" style="margin-top:12px">呼び出し例</p>
-    <pre id="issued-curl"></pre>
-    <button id="copy-curl">呼び出し例をコピー</button>
+    <p class="muted" id="issued-label1"></p>
+    <pre id="issued-1"></pre>
+    <button id="copy-1">コピー</button>
+    <p class="muted" style="margin-top:12px" id="issued-label2"></p>
+    <pre id="issued-2"></pre>
+    <button id="copy-2">コピー</button>
   </section>
 
   <section>
@@ -111,25 +114,38 @@
   </section>
 
   <section>
-    <h2>ID を追加</h2>
-    <form id="add">
-      <input id="new-id" placeholder="例: claude、chatgpt（英数字と _ . -）" maxlength="32" autocomplete="off" required>
-      <button class="primary" type="submit">追加して発行</button>
+    <h2>MCP コネクタ</h2>
+    <p class="hint">リモート MCP サーバーを登録できる AI（claude.ai のカスタムコネクタなど）ごとに、専用の URL を発行します。URL を知っていれば誰でも読み上げられるので、AI に登録する以外には使わないでください。</p>
+    <form id="add-mcp" class="add">
+      <input id="new-mcp" placeholder="例: claude-web、chatgpt（英数字と _ . -）" maxlength="32" autocomplete="off" required>
+      <button class="primary" type="submit">追加して URL を発行</button>
     </form>
-    <p id="msg"></p>
+    <p class="msg" id="msg-mcp"></p>
+    <table>
+      <thead><tr><th>名前</th><th>作成</th><th class="used">最終使用</th><th></th></tr></thead>
+      <tbody id="list-mcp"><tr><td colspan="4" class="empty">読み込み中…</td></tr></tbody>
+    </table>
   </section>
 
   <section>
-    <h2>ID 一覧</h2>
+    <h2>API の ID</h2>
+    <p class="hint">MCP を使わずに、Basic 認証で <code>/speak</code> を直接呼ぶ呼び出し元用です。</p>
+    <form id="add-api" class="add">
+      <input id="new-api" placeholder="例: claude、cron（英数字と _ . -）" maxlength="32" autocomplete="off" required>
+      <button class="primary" type="submit">追加して発行</button>
+    </form>
+    <p class="msg" id="msg-api"></p>
     <table>
       <thead><tr><th>ID</th><th>作成</th><th class="used">最終使用</th><th></th></tr></thead>
-      <tbody id="list"><tr><td colspan="4" class="empty">読み込み中…</td></tr></tbody>
+      <tbody id="list-api"><tr><td colspan="4" class="empty">読み込み中…</td></tr></tbody>
     </table>
   </section>
 </main>
 <script>
 const API = 'admin/api/clients';
 const SPEAK_URL = new URL('speak', location.href).href;
+// MCP サーバーは /alexa_speak_mcp/ で公開している（管理ページは /alexa_speak/admin）
+const MCP_BASE = new URL('../alexa_speak_mcp/mcp/', location.href).href;
 const $ = (id) => document.getElementById(id);
 
 async function call(method, url, body) {
@@ -145,41 +161,69 @@ async function call(method, url, body) {
 
 const fmt = (s) => s ? s.replace('T', ' ') : '—';
 
-async function load() {
-  const tbody = $('list');
-  try {
-    const { clients } = await call('GET', API);
-    tbody.innerHTML = '';
-    if (!clients.length) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty">まだありません</td></tr>';
-      return;
-    }
-    for (const c of clients) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td class="id"></td><td class="muted"></td><td class="muted used"></td>
-        <td class="ops"><button data-act="reset">再発行</button><button class="danger" data-act="del">削除</button></td>`;
-      tr.cells[0].textContent = c.id;
-      tr.cells[1].textContent = fmt(c.created);
-      tr.cells[2].textContent = fmt(c.last_used);
-      tr.querySelector('[data-act=reset]').onclick = () => reset(c.id);
-      tr.querySelector('[data-act=del]').onclick = () => del(c.id);
-      tbody.appendChild(tr);
-    }
-  } catch (e) {
-    tbody.innerHTML = '';
-    const tr = tbody.insertRow(); const td = tr.insertCell();
-    td.colSpan = 4; td.className = 'empty'; td.textContent = '読み込めませんでした: ' + e.message;
+function fillList(tbody, clients, kind) {
+  tbody.innerHTML = '';
+  if (!clients.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">まだありません</td></tr>';
+    return;
+  }
+  const again = kind === 'mcp' ? 'URL を作り直す' : '再発行';
+  for (const c of clients) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="id"></td><td class="muted"></td><td class="muted used"></td>
+      <td class="ops"><button data-act="reset"></button><button class="danger" data-act="del">削除</button></td>`;
+    tr.cells[0].textContent = c.id;
+    tr.cells[1].textContent = fmt(c.created);
+    tr.cells[2].textContent = fmt(c.last_used);
+    tr.querySelector('[data-act=reset]').textContent = again;
+    tr.querySelector('[data-act=reset]').onclick = () => reset(c.id, kind);
+    tr.querySelector('[data-act=del]').onclick = () => del(c.id, kind);
+    tbody.appendChild(tr);
   }
 }
 
-function showIssued(id, password) {
-  $('issued-cred').textContent = `ID: ${id}\nパスワード: ${password}`;
-  $('issued-curl').textContent =
-    `curl -s -u '${id}:${password}' -X POST -H 'Content-Type: application/json' \\\n` +
-    `  -d '{"text":"テストです"}' ${SPEAK_URL}`;
+async function load() {
+  try {
+    const { clients } = await call('GET', API);
+    fillList($('list-api'), clients.filter((c) => c.kind !== 'mcp'), 'api');
+    fillList($('list-mcp'), clients.filter((c) => c.kind === 'mcp'), 'mcp');
+  } catch (e) {
+    for (const id of ['list-api', 'list-mcp']) {
+      const tbody = $(id); tbody.innerHTML = '';
+      const td = tbody.insertRow().insertCell();
+      td.colSpan = 4; td.className = 'empty'; td.textContent = '読み込めませんでした: ' + e.message;
+    }
+  }
+}
+
+function showIssued(id, password, kind) {
+  let blocks;
+  if (kind === 'mcp') {
+    const url = MCP_BASE + encodeURIComponent(id) + '/' + password;
+    $('issued-title').textContent = `MCP コネクタ「${id}」の URL を発行しました`;
+    blocks = [
+      ['AI のコネクタの設定に、この URL を登録してください（認証の設定は不要です）', url],
+      ['claude.ai の場合: 設定 → コネクタ → カスタムコネクタを追加 → この URL を入れる', ''],
+    ];
+  } else {
+    $('issued-title').textContent = `ID「${id}」のパスワードを発行しました`;
+    blocks = [
+      ['ID とパスワード（ID:パスワード の形でコピーされます）', `ID: ${id}\nパスワード: ${password}`],
+      ['呼び出し例', `curl -s -u '${id}:${password}' -X POST -H 'Content-Type: application/json' \\\n`
+        + `  -d '{"text":"テストです"}' ${SPEAK_URL}`],
+    ];
+  }
+  const copyText = [kind === 'mcp' ? blocks[0][1] : `${id}:${password}`, blocks[1][1]];
+  for (const i of [1, 2]) {
+    const [label, text] = blocks[i - 1];
+    $(`issued-label${i}`).textContent = label;
+    $(`issued-${i}`).textContent = text;
+    $(`issued-${i}`).style.display = text ? 'block' : 'none';
+    $(`copy-${i}`).style.display = text ? 'inline-block' : 'none';
+    $(`copy-${i}`).textContent = 'コピー';
+    $(`copy-${i}`).onclick = () => copy(copyText[i - 1], `copy-${i}`);
+  }
   $('issued').style.display = 'block';
-  $('copy-cred').onclick = () => copy(`${id}:${password}`, 'copy-cred');
-  $('copy-curl').onclick = () => copy($('issued-curl').textContent, 'copy-curl');
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -190,26 +234,32 @@ async function copy(text, btnId) {
   setTimeout(() => btn.textContent = label, 1500);
 }
 
-$('add').onsubmit = async (ev) => {
-  ev.preventDefault();
-  $('msg').textContent = '';
-  const id = $('new-id').value.trim();
-  try {
-    const r = await call('POST', API, { id });
-    $('new-id').value = '';
-    showIssued(r.id, r.password);
-    load();
-  } catch (e) { $('msg').textContent = e.message; }
-};
+for (const kind of ['api', 'mcp']) {
+  $(`add-${kind}`).onsubmit = async (ev) => {
+    ev.preventDefault();
+    $(`msg-${kind}`).textContent = '';
+    const input = $(`new-${kind}`);
+    try {
+      const r = await call('POST', API, { id: input.value.trim(), kind });
+      input.value = '';
+      showIssued(r.id, r.password, r.kind);
+      load();
+    } catch (e) { $(`msg-${kind}`).textContent = e.message; }
+  };
+}
 
-async function reset(id) {
-  if (!confirm(`「${id}」のパスワードを再発行します。今のパスワードは使えなくなります。`)) return;
-  try { const r = await call('POST', `${API}/${encodeURIComponent(id)}/reset`); showIssued(r.id, r.password); }
+async function reset(id, kind) {
+  const what = kind === 'mcp'
+    ? `MCP コネクタ「${id}」の URL を作り直します。今の URL は使えなくなるので、AI に登録し直す必要があります。`
+    : `「${id}」のパスワードを再発行します。今のパスワードは使えなくなります。`;
+  if (!confirm(what)) return;
+  try { const r = await call('POST', `${API}/${encodeURIComponent(id)}/reset`); showIssued(r.id, r.password, r.kind); }
   catch (e) { alert(e.message); }
 }
 
-async function del(id) {
-  if (!confirm(`「${id}」を削除します。この ID からは読み上げできなくなります。`)) return;
+async function del(id, kind) {
+  const what = kind === 'mcp' ? `MCP コネクタ「${id}」` : `「${id}」`;
+  if (!confirm(`${what}を削除します。ここからは読み上げできなくなります。`)) return;
   try { await call('DELETE', `${API}/${encodeURIComponent(id)}`); load(); }
   catch (e) { alert(e.message); }
 }

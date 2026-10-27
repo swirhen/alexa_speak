@@ -72,7 +72,7 @@ print(r.status_code, r.json()["ok"])
 
 ### MCP（リモート MCP サーバー）
 
-`mcp_server/` に、`/speak` を呼ぶ MCP サーバー（Streamable HTTP）があります。公開するツールは `speak`（引数は `text` と `chime`）だけです。リモート MCP サーバーを登録できる AI（claude.ai のカスタムコネクタなど）に、持ち主から渡された URL（`https://swirhen.tv/alexa_speak_mcp/mcp/<トークン>`）を登録すると使えます。認証の設定は不要です（URL のトークンが鍵の代わり）。
+`mcp_server/` に、`/speak` を呼ぶ MCP サーバー（Streamable HTTP）があります。公開するツールは `speak`（引数は `text` と `chime`）だけです。リモート MCP サーバーを登録できる AI（claude.ai のカスタムコネクタなど）に、持ち主から渡された URL（`https://swirhen.tv/alexa_speak_mcp/mcp/<名前>/<乱数>`）を登録すると使えます。URL は AI ごとに別々で、認証の設定は不要です（URL に含まれる乱数が鍵の代わり）。
 
 ## 運用者向け
 
@@ -115,6 +115,10 @@ curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
 
 - 既定の端末：API で `device` を省いたときに読み上げる端末。Echo 系の端末とマルチルームのグループから選ぶ。
 - 読み上げの音量（0〜100）：読み上げるときだけこの音量にして、終わったら元の音量に戻す（音量を変える → 読み上げる → 戻す、を 1 つの命令として送る）。0 なら音量を変えない。今の音量が取れなかった端末は、音量を変えずに読み上げる。
+
+#### MCP コネクタの管理
+
+管理ページの「MCP コネクタ」で、MCP につなぐ AI ごとにコネクタを追加する。追加すると、その AI 専用の URL（`https://swirhen.tv/alexa_speak_mcp/mcp/<名前>/<乱数>`）を 1 回だけ表示するので、AI のコネクタの設定に登録する（claude.ai なら「設定 → コネクタ → カスタムコネクタを追加」）。URL の作り直しと削除もでき、最終使用日時も見られる。中身は `kind` が `mcp` の API の ID（後述）で、名前と乱数がそのまま ID とパスワードになる。
 
 #### API の ID の管理
 
@@ -171,16 +175,18 @@ cd /home/swirhen/alexa_speak && git pull --ff-only && sudo systemctl restart ale
 
 ### MCP サーバー（mcp_server/）
 
-複数の AI から 1 つの MCP サーバーに接続する。claude.ai のカスタムコネクタなどは Basic 認証のヘッダーを付けられない（OAuth か認証なしだけ）ので、MCP サーバーは認証なしで公開し、代わりに **URL に推測できないトークンを含める**。トークンの違う URL は 404 になる。
+複数の AI から 1 つの MCP サーバーに接続する。claude.ai のカスタムコネクタなどは Basic 認証のヘッダーを付けられない（OAuth か認証なしだけ）ので、MCP サーバーは認証なしで公開し、代わりに **AI ごとの URL に推測できない乱数を含める**。
 
 ```
-AI（claude.ai など）──HTTPS──▶ Apache (/alexa_speak_mcp/mcp/<トークン>) ──▶ mcp_server/server.py (127.0.0.1:8004)
-  ──Basic 認証──▶ /speak (127.0.0.1:8003)
+AI（claude.ai など）──HTTPS──▶ Apache (/alexa_speak_mcp/mcp/<名前>/<乱数>) ──▶ mcp_server/server.py (127.0.0.1:8004)
+  ──Basic 認証（名前:乱数）──▶ /speak (127.0.0.1:8003)
 ```
 
-- `/speak` を呼ぶ ID とパスワードは、管理ページで MCP 用に発行した共通の ID（`ai-web`）を使う。MCP 経由の読み上げは、どの AI からでもすべて `ai-web` として扱われる（AI ごとに区別したいときは、MCP を使わず `/speak` を AI ごとの ID で直接呼ぶ）。コードには書かず、`/etc/default/alexa-speak-mcp`（root・600、雛形は `mcp_server/alexa-speak-mcp.env.example`）から環境変数で渡す。
-- トークンは `ALEXA_SPEAK_MCP_PATH_TOKEN`（英数字と `_` `-` で 32 文字以上）。URL を知っていれば誰でも読み上げられるので、漏れたら作り直してコネクタを登録し直す。Apache のアクセスログには URL ごと残る。
-- 読み上げの回数制限（1 分 10 回）と記録は、`/speak` 側の ID（`ai-web`）単位でかかる。MCP につないでいるすべての AI の分をまとめて数える。
+- コネクタは管理ページで発行する（`clients.json` の `kind` が `mcp` の ID。乱数は 64 桁の 16 進数）。MCP サーバーは URL の名前と乱数をそのまま `/speak` の Basic 認証に使うので、自分では秘密情報を持たない。
+- MCP サーバーは入口で、URL が使えるかを alexa_speak の `/whoami` に問い合わせて確かめる（`kind` が `mcp` のものだけ通す）。使えない URL は 404 になる。結果は 60 秒覚えるので、削除や作り直しは最大 60 秒で反映される。
+- ツールには、入口で付け直したヘッダー（`x-alexa-speak-connector` / `x-alexa-speak-secret`）で名前と乱数を渡す。外から同じ名前のヘッダーが来ても、入口で捨てる。
+- 読み上げの回数制限（1 分 10 回）と記録は、コネクタごとにかかる（ログには `client=<名前>` で残る）。
+- URL を知っていれば誰でも読み上げられるので、漏れたら管理ページで作り直して AI に登録し直す。Apache のアクセスログには URL ごと残る。
 - systemd: `alexa-speak-mcp.service`。venv は `mcp_server/.venv`（`mcp` は 2.x の `MCPServer` を使う。バージョンは `requirements.txt` で固定）。
 
 #### 初期導入
@@ -188,7 +194,6 @@ AI（claude.ai など）──HTTPS──▶ Apache (/alexa_speak_mcp/mcp/<ト�
 ```bash
 cd /home/swirhen/alexa_speak/mcp_server
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-sudo install -m 0600 -o root -g root alexa-speak-mcp.env.example /etc/default/alexa-speak-mcp   # 値を入れる
 sudo install -m 0644 alexa-speak-mcp.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now alexa-speak-mcp.service

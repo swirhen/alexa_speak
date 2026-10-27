@@ -15,12 +15,12 @@
 - `admin.html`: ID の管理ページ（`/admin`、管理者の Basic 認証）。変更の操作は `X-Alexa-Speak-Admin: 1` ヘッダーが必須（ほかのサイトからの CSRF 対策）。
 - `alexa-speak.service`: systemd 定義。日本向けの環境変数（`AMAZON`・`ALEXA`・`TTS_LOCALE`）もここで指定する。
 - `alexa-speak.env.example`: `/etc/default/alexa-speak` の雛形。
-- `mcp_server/server.py`: `/speak` を呼ぶ MCP サーバー（複数の AI から接続する共通のリモート MCP サーバー、Streamable HTTP、ツールは `speak` だけ）。`/speak` は共通の ID `ai-web` で呼ぶ。認証情報は環境変数（`/etc/default/alexa-speak-mcp`）から読む。
+- `mcp_server/server.py`: `/speak` を呼ぶ MCP サーバー（複数の AI から接続する共通のリモート MCP サーバー、Streamable HTTP、ツールは `speak` だけ）。URL `/mcp/<名前>/<乱数>` の名前と乱数（管理ページで発行する `kind: mcp` の ID）をそのまま `/speak` の Basic 認証に使う。秘密情報は持たない。
 
 ## 注意
 
-- `REFRESH_TOKEN`・`ALEXA_SPEAK_ADMIN`・`ALEXA_SPEAK_PASSWORD`・`ALEXA_SPEAK_MCP_PATH_TOKEN` の値と `clients.json`・`alexa_token.json` は表示・コミットしない。
-- MCP サーバーは URL のトークンだけで守っている。公開するツールを増やすときは、URL を知った人に何ができるようになるかを考えること。
+- `REFRESH_TOKEN`・`ALEXA_SPEAK_ADMIN`・`ALEXA_SPEAK_PASSWORD` の値、MCP コネクタの URL と `clients.json`・`alexa_token.json` は表示・コミットしない。
+- MCP サーバーは URL に含まれる乱数だけで守っている。公開するツールを増やすときは、URL を知った人に何ができるようになるかを考えること。
 - API は `https://swirhen.tv/alexa_speak/` で外部に公開している。`/health` 以外は必ず Basic 認証を通すこと（認証なしの読み上げ口を作らない）。
 - Alexa の Web API は非公式で、予告なく変わる。読み上げや端末一覧が急に失敗するようになったら、まず upstream の alexa-remote-control（https://github.com/thorsten-gehrig/alexa-remote-control）の最新版の `log_in` / `get_devlist` / `check_status` / `run_cmd` と `alexa_client.py` を見比べる。管理ページからの Amazon ログインが失敗するようになったら、alexa-cookie2（https://github.com/Apollon77/alexa-cookie）の `lib/proxy.js` と `alexa-cookie.js` の `handleTokenRegistration` を `alexa_auth.py` と見比べる。
 

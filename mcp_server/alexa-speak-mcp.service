@@ -8,8 +8,6 @@ Type=simple
 User=swirhen
 Group=swirhen
 WorkingDirectory=/home/swirhen/alexa_speak/mcp_server
-# ALEXA_SPEAK_ID / ALEXA_SPEAK_PASSWORD / ALEXA_SPEAK_MCP_PATH_TOKEN はここに書く（root 所有・600）
-EnvironmentFile=/etc/default/alexa-speak-mcp
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/swirhen/alexa_speak/mcp_server/.venv/bin/python server.py
 Restart=on-failure
