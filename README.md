@@ -85,7 +85,7 @@ URL は `https://swirhen.tv/alexa_speak/<パス>`（サーバー内からは `ht
 | GET | `/health` | 死活確認（認証なし） |
 | GET | `/admin` | ID の管理ページ（管理者でログイン） |
 | GET | `/devices` | 端末一覧。`{"ok": true, "devices": [{"name": "Echo Hub", "family": "KNIGHT", "online": true}, ...]}` |
-| POST | `/speak` | `{"text": "読み上げる文章", "device": "端末名", "chime": true}`。`device` を省くと `ALEXA_DEFAULT_DEVICE` を使う。`chime` が `true`（既定）なら、文章を SSML で包んで前に `ALEXA_SPEAK_CHIME` の音を入れる。文章は 300 文字まで |
+| POST | `/speak` | `{"text": "読み上げる文章", "device": "端末名", "chime": true}`。`device` を省くと、管理ページで決めた既定の端末を使う。管理ページで読み上げの音量を決めてあれば、読み上げるときだけその音量にして、終わったら元に戻す。`chime` が `true`（既定）なら、文章を SSML で包んで前に `ALEXA_SPEAK_CHIME` の音を入れる。文章は 300 文字まで |
 
 ```bash
 curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
@@ -105,9 +105,16 @@ curl -s -u <ID>:<パスワード> -X POST -H 'Content-Type: application/json' \
 | キー | 内容 |
 | --- | --- |
 | `REFRESH_TOKEN` | Amazon の `Atnr|...` のトークン。通常は空でよい（管理ページからログインすると `alexa_token.json` に保存され、そちらが優先される） |
-| `ALEXA_DEFAULT_DEVICE` | `device` を省いたときの端末名（`/devices` で表示される名前） |
+| `ALEXA_DEFAULT_DEVICE` | `device` を省いたときの端末名の初期値。管理ページで既定の端末を保存すると、そちら（`settings.json`）が優先される |
 | `ALEXA_SPEAK_CHIME` | 読み上げの前に鳴らす音。Alexa の効果音ライブラリ（[ASK Sound Library](https://developer.amazon.com/en-US/docs/alexa/custom-skills/ask-soundlibrary.html)）の `soundbank://` URL。省略時はドアチャイム（`soundbank://soundlibrary/home/amzn_sfx_doorbell_chime_01`）、空にするとチャイムなし |
 | `ALEXA_SPEAK_ADMIN` | 管理ページの管理者。`id:password` の形で書く。空なら管理ページは使えない |
+
+#### 読み上げの設定
+
+管理ページの「読み上げの設定」で、次の 2 つを変えられる。保存すると `settings.json`（リポジトリ直下、Git 管理外）に書かれ、再起動なしですぐ使われる。「今の設定でテスト読み上げ」で、保存した設定のまま読み上げを試せる。
+
+- 既定の端末：API で `device` を省いたときに読み上げる端末。Echo 系の端末とマルチルームのグループから選ぶ。
+- 読み上げの音量（0〜100）：読み上げるときだけこの音量にして、終わったら元の音量に戻す（音量を変える → 読み上げる → 戻す、を 1 つの命令として送る）。0 なら音量を変えない。今の音量が取れなかった端末は、音量を変えずに読み上げる。
 
 #### API の ID の管理
 

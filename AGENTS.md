@@ -11,6 +11,7 @@
 - `server.py`: API サーバー（標準ライブラリのみ）。API の ID は `ClientStore` が `clients.json` で管理する。
 - `alexa_auth.py`: Amazon へのログイン（alexa-cookie2 の端末登録の移植）。ログイン URL を作り、貼り付けられた `/ap/maplanding` の URL から認可コードを取り出して `/auth/register` で refresh_token を受け取る。プロキシは使わない。
 - `alexa_client.py`: Alexa の Web API のクライアント（標準ライブラリのみ）。refresh_token → cookie の交換、csrf・customerId の取得、端末一覧、`Alexa.Speak` の送信。cookie と端末一覧はメモリ上に持つ。
+- `settings.json`: 管理ページで変える読み上げの設定（既定の端末・読み上げの音量）。Git 管理外。`server.py` の `SettingsStore` が読み書きする。
 - `admin.html`: ID の管理ページ（`/admin`、管理者の Basic 認証）。変更の操作は `X-Alexa-Speak-Admin: 1` ヘッダーが必須（ほかのサイトからの CSRF 対策）。
 - `alexa-speak.service`: systemd 定義。日本向けの環境変数（`AMAZON`・`ALEXA`・`TTS_LOCALE`）もここで指定する。
 - `alexa-speak.env.example`: `/etc/default/alexa-speak` の雛形。

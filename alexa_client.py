@@ -26,7 +26,7 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:1.0) bash-script/1.0"
 COOKIE_LIFETIME = 24 * 60 * 60
 DEVICE_CACHE = 10 * 60
 TIMEOUT = 30
-# 端末名を省いたときや "ALL" のときに対象にする、読み上げできる端末の種類
+# 読み上げに使える端末の種類（Echo 系とマルチルームのグループ）。管理ページの既定の端末の候補にする
 SPEAKER_FAMILIES = {"ECHO", "KNIGHT", "ROOK", "WHA"}
 
 
@@ -178,7 +178,8 @@ class AlexaClient:
     @staticmethod
     def _summarize(devices: list[dict]) -> list[dict]:
         return [
-            {"name": d.get("accountName"), "family": d.get("deviceFamily"), "online": d.get("online")}
+            {"name": d.get("accountName"), "family": d.get("deviceFamily"), "online": d.get("online"),
+             "speaker": d.get("deviceFamily") in SPEAKER_FAMILIES}
             for d in devices
         ]
 
@@ -207,28 +208,59 @@ class AlexaClient:
 
     # ---- 読み上げ ----
 
-    def speak(self, device: str, text: str) -> None:
-        """text は普通の文章か、<speak> で始まる SSML。"""
+    def _node(self, command: str, device_type: str, serial: str, **payload: str) -> dict:
+        return {
+            "@type": "com.amazon.alexa.behaviors.model.OpaquePayloadOperationNode",
+            "type": command,
+            "operationPayload": {
+                "deviceType": device_type,
+                "deviceSerialNumber": serial,
+                "customerId": self.customer_id,
+                "locale": self.locale,
+                **payload,
+            },
+        }
+
+    def _current_volumes(self) -> dict[str, int]:
+        """端末ごと（シリアル番号）の今の音量。取れなければ空。"""
+        status, raw = self._call("GET", "/api/devices/deviceType/dsn/audio/v1/allDeviceVolumes")
+        try:
+            return {v["dsn"]: int(v["speakerVolume"]) for v in json.loads(raw)["volumes"]}
+        except (ValueError, KeyError, TypeError):
+            return {}
+
+    def speak(self, device: str, text: str, volume: int = 0) -> None:
+        """text は普通の文章か、<speak> で始まる SSML。
+
+        volume が 1〜100 なら、その音量にしてから読み上げ、終わったら元の音量に戻す
+        （alexa-remote-control の SPEAKVOL と同じ）。0 なら音量は変えない。
+        """
+        parallel = "com.amazon.alexa.behaviors.model.ParallelNode"
         with self.lock:
             self._ensure_login()
-            nodes = [
-                {
-                    "@type": "com.amazon.alexa.behaviors.model.OpaquePayloadOperationNode",
-                    "type": "Alexa.Speak",
-                    "operationPayload": {
-                        "deviceType": device_type,
-                        "deviceSerialNumber": serial,
-                        "customerId": self.customer_id,
-                        "locale": self.locale,
-                        "textToSpeak": text,
-                    },
+            targets = self._targets(device)
+            speak_nodes = [self._node("Alexa.Speak", t, s, textToSpeak=text) for t, s in targets]
+            pre, post = [], []
+            if volume:
+                current = self._current_volumes()
+                for t, s in targets:
+                    # 今の音量が取れないときは戻し先が分からないので、その端末の音量は変えない
+                    if s in current and current[s] != volume:
+                        pre.append(self._node("Alexa.DeviceControls.Volume", t, s, value=str(volume)))
+                        post.append(self._node("Alexa.DeviceControls.Volume", t, s, value=str(current[s])))
+            if pre:
+                # 音量を変える → 読み上げる → 元に戻す、を順番に（それぞれの中は全端末同時に）
+                start = {
+                    "@type": "com.amazon.alexa.behaviors.model.SerialNode",
+                    "nodesToExecute": [
+                        {"@type": parallel, "nodesToExecute": pre},
+                        {"@type": parallel, "nodesToExecute": speak_nodes},
+                        {"@type": parallel, "nodesToExecute": post},
+                    ],
                 }
-                for device_type, serial in self._targets(device)
-            ]
-            sequence = {
-                "@type": "com.amazon.alexa.behaviors.model.Sequence",
-                "startNode": {"@type": "com.amazon.alexa.behaviors.model.ParallelNode", "nodesToExecute": nodes},
-            }
+            else:
+                start = {"@type": parallel, "nodesToExecute": speak_nodes}
+            sequence = {"@type": "com.amazon.alexa.behaviors.model.Sequence", "startNode": start}
             status, raw = self._call("POST", "/api/behaviors/preview", {
                 "behaviorId": "PREVIEW",
                 "sequenceJson": json.dumps(sequence, ensure_ascii=False),

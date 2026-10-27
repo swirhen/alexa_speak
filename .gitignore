@@ -4,3 +4,4 @@ clients.json
 alexa-speak.env
 mcp_server/.venv/
 alexa_token.json
+settings.json

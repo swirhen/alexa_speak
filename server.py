@@ -4,7 +4,7 @@ Alexa の Web API は alexa_client.py で直接呼ぶ（alexa-remote-control の
 
 GET  /health            死活確認（認証なし）
 GET  /devices           端末一覧
-POST /speak             {"text": "...", "device": "端末名（省略時は ALEXA_DEFAULT_DEVICE）", "chime": true}
+POST /speak             {"text": "...", "device": "端末名（省略時は管理ページで決めた既定の端末）", "chime": true}
 GET  /admin             API の ID を管理するページ（管理者の Basic 認証）
 
 /devices と /speak は、管理ページで発行した ID とパスワードの Basic 認証が必要。
@@ -33,7 +33,7 @@ from alexa_client import AlexaClient, AlexaError
 
 HOST = os.environ.get("ALEXA_SPEAK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ALEXA_SPEAK_PORT", "8003"))
-DEFAULT_DEVICE = os.environ.get("ALEXA_DEFAULT_DEVICE", "")
+SETTINGS_FILE = Path(os.environ.get("ALEXA_SPEAK_SETTINGS_FILE", Path(__file__).with_name("settings.json")))
 # 読み上げの前に鳴らす音（Alexa の効果音ライブラリの soundbank:// URL）。空ならチャイムなし
 CHIME = os.environ.get(
     "ALEXA_SPEAK_CHIME", "soundbank://soundlibrary/home/amzn_sfx_doorbell_chime_01"
@@ -92,6 +92,36 @@ class TokenStore:
 
     def info(self) -> dict:
         return {k: v for k, v in self.data.items() if k != "refresh_token"} | {"has_token": bool(self.token)}
+
+
+class SettingsStore:
+    """管理ページで変える読み上げの設定を settings.json で持つ。
+
+    default_device: device を省いたときの端末名（無ければ環境変数 ALEXA_DEFAULT_DEVICE）
+    speak_volume:   読み上げるときだけ使う音量 1〜100。0 なら音量を変えない
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.lock = threading.Lock()
+        self.data = {"default_device": os.environ.get("ALEXA_DEFAULT_DEVICE", ""), "speak_volume": 0}
+        if path.exists():
+            self.data.update(json.loads(path.read_text(encoding="utf-8")))
+
+    @property
+    def default_device(self) -> str:
+        return self.data["default_device"]
+
+    @property
+    def speak_volume(self) -> int:
+        return self.data["speak_volume"]
+
+    def save(self, default_device: str, speak_volume: int) -> None:
+        with self.lock:
+            self.data = {"default_device": default_device, "speak_volume": speak_volume, "updated": _now()}
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, self.path)
 
 
 def _new_alexa_client(token: str) -> AlexaClient:
@@ -182,6 +212,7 @@ class ClientStore:
 
 STORE = ClientStore(CLIENTS_FILE)
 TOKENS = TokenStore(TOKEN_FILE)
+SETTINGS = SettingsStore(SETTINGS_FILE)
 ALEXA = _new_alexa_client(TOKENS.token)
 
 # 管理ページからの Amazon ログインの途中経過（同時に進めるのは 1 件だけ）
@@ -310,6 +341,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/admin/api/alexa/") and method == "POST":
             self._admin_alexa(path)
             return
+        if path in ("/admin/api/settings", "/admin/api/devices", "/admin/api/speak-test"):
+            self._admin_settings(method, path)
+            return
         m = re.fullmatch(r"/admin/api/clients(?:/([^/]+)(/reset)?)?", path)
         if not m:
             self._send(404, {"ok": False, "error": "not found"})
@@ -342,6 +376,48 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"ok": False, "error": "その ID は無い"})
                 return
             print(f"admin {self.client_id} deleted client {cid}", flush=True)
+            self._send(200, {"ok": True})
+        else:
+            self._send(405, {"ok": False, "error": "method not allowed"})
+
+    def _admin_settings(self, method: str, path: str) -> None:
+        if path == "/admin/api/settings" and method == "GET":
+            self._send(200, {"ok": True, "default_device": SETTINGS.default_device,
+                             "speak_volume": SETTINGS.speak_volume})
+        elif path == "/admin/api/devices" and method == "GET":
+            try:
+                devices = ALEXA.list_devices()
+            except AlexaError as e:
+                _record_alexa_error(e)
+                self._send(502, {"ok": False, "error": str(e)})
+                return
+            self._send(200, {"ok": True, "devices": devices})
+        elif path == "/admin/api/settings" and method == "POST":
+            body = self._read_json()
+            if body is None:
+                return
+            device = str(body.get("default_device", "")).strip()
+            volume = body.get("speak_volume", 0)
+            if not device:
+                self._send(400, {"ok": False, "error": "既定の端末を選ぶ"})
+                return
+            if not isinstance(volume, int) or isinstance(volume, bool) or not 0 <= volume <= 100:
+                self._send(400, {"ok": False, "error": "音量は 0〜100 の整数（0 は変えない）"})
+                return
+            SETTINGS.save(device, volume)
+            print(f"admin {self.client_id} saved settings device={device} volume={volume}", flush=True)
+            self._send(200, {"ok": True, "default_device": device, "speak_volume": volume})
+        elif path == "/admin/api/speak-test" and method == "POST":
+            # 今の設定（既定の端末・音量・チャイム）で読み上げる
+            try:
+                ALEXA.speak(SETTINGS.default_device,
+                            to_speech("アレクサ スピークのテストです。この音量で読み上げます。", True),
+                            SETTINGS.speak_volume)
+            except AlexaError as e:
+                _record_alexa_error(e)
+                self._send(502, {"ok": False, "error": str(e)})
+                return
+            print(f"admin {self.client_id} speak test device={SETTINGS.default_device}", flush=True)
             self._send(200, {"ok": True})
         else:
             self._send(405, {"ok": False, "error": "method not allowed"})
@@ -441,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         text = " ".join(str(body.get("text", "")).split())
-        device = str(body.get("device") or DEFAULT_DEVICE)
+        device = str(body.get("device") or SETTINGS.default_device)
         chime = body.get("chime", True)
         if not isinstance(chime, bool):
             self._send(400, {"ok": False, "error": "chime must be true or false"})
@@ -468,7 +544,7 @@ class Handler(BaseHTTPRequestHandler):
         print(f"speak client={self.client_id} device={device} chime={chime} text={text}", flush=True)
         started = time.time()
         try:
-            ALEXA.speak(device, to_speech(text, chime))
+            ALEXA.speak(device, to_speech(text, chime), SETTINGS.speak_volume)
         except AlexaError as e:
             _record_alexa_error(e)
             print(f"speak failed client={self.client_id}: {e}", flush=True)

@@ -42,6 +42,15 @@
   .steps form { margin-top: 8px; }
   .ok-text { color: var(--fg); }
   a { color: var(--accent); }
+  .settings { display: grid; gap: 4px; }
+  .settings label { display: grid; gap: 6px; font-weight: 500; margin-top: 8px; }
+  .settings .row { margin-top: 12px; }
+  select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+  .vol { display: flex; align-items: center; gap: 12px; }
+  .vol input { flex: 1; min-width: 0; padding: 0; border: 0; background: none; }
+  .vol output { min-width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
+  .hint { color: var(--muted); font-size: 13px; }
+  #settings-msg { min-height: 1.6em; margin: 8px 0 0; font-size: 14px; }
   @media (max-width: 560px) {
     th.used, td.used { display: none; }
   }
@@ -80,6 +89,25 @@
         </form>
       </li>
     </ol>
+  </section>
+
+  <section>
+    <h2>読み上げの設定</h2>
+    <form id="settings" class="settings">
+      <label>既定の端末
+        <select id="set-device"><option value="">読み込み中…</option></select>
+      </label>
+      <span class="hint">API で端末名を省いたときに読み上げる端末</span>
+      <label>読み上げの音量
+        <span class="vol"><input id="set-volume" type="range" min="0" max="100" step="1" value="0"><output id="set-volume-out">0</output></span>
+      </label>
+      <span class="hint">読み上げるときだけこの音量にして、終わったら元の音量に戻す。0 なら音量を変えない</span>
+      <div class="row">
+        <button class="primary" type="submit">保存</button>
+        <button id="speak-test" type="button">今の設定でテスト読み上げ</button>
+      </div>
+      <p id="settings-msg" class="muted"></p>
+    </form>
   </section>
 
   <section>
@@ -234,8 +262,56 @@ $('alexa-finish').onsubmit = async (ev) => {
   loadAlexa();
 };
 
+// ---- 読み上げの設定 ----
+const volLabel = (v) => Number(v) === 0 ? '変えない' : String(v);
+$('set-volume').oninput = () => { $('set-volume-out').textContent = volLabel($('set-volume').value); };
+
+async function loadSettings() {
+  const sel = $('set-device');
+  try {
+    const [s, d] = await Promise.all([call('GET', 'admin/api/settings'), call('GET', 'admin/api/devices')]);
+    sel.innerHTML = '';
+    const names = new Set();
+    for (const dev of d.devices.filter((x) => x.speaker)) {
+      const o = new Option(dev.name + (dev.online ? '' : '（オフライン）'), dev.name);
+      sel.add(o); names.add(dev.name);
+    }
+    // 一覧に無い端末が設定されていたら、それとわかるように残す
+    if (s.default_device && !names.has(s.default_device)) {
+      sel.add(new Option(`${s.default_device}（見つからない）`, s.default_device));
+    }
+    sel.value = s.default_device;
+    $('set-volume').value = s.speak_volume;
+    $('set-volume-out').textContent = volLabel(s.speak_volume);
+  } catch (e) {
+    sel.innerHTML = '<option value="">端末一覧を読み込めませんでした</option>';
+    $('settings-msg').textContent = e.message;
+  }
+}
+
+$('settings').onsubmit = async (ev) => {
+  ev.preventDefault();
+  $('settings-msg').textContent = '';
+  try {
+    await call('POST', 'admin/api/settings',
+      { default_device: $('set-device').value, speak_volume: Number($('set-volume').value) });
+    $('settings-msg').textContent = '保存しました。';
+  } catch (e) { $('settings-msg').textContent = '保存できませんでした: ' + e.message; }
+};
+
+$('speak-test').onclick = async () => {
+  const btn = $('speak-test'); btn.disabled = true;
+  $('settings-msg').textContent = '読み上げを依頼しています…（保存した設定で読み上げます）';
+  try {
+    await call('POST', 'admin/api/speak-test');
+    $('settings-msg').textContent = '読み上げを依頼しました。';
+  } catch (e) { $('settings-msg').textContent = 'テストできませんでした: ' + e.message; }
+  btn.disabled = false;
+};
+
 load();
 loadAlexa();
+loadSettings();
 </script>
 </body>
 </html>
